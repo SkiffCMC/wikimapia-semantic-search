@@ -3,7 +3,7 @@
  * HTTP transport built on `globalThis.fetch` and the real-time clock. Tests never use these
  * through the client; their unit tests stub `fetch` and use fake timers.
  */
-import type { Clock, WikimapiaTransport } from '../../contracts/wikimapia-client.schema.js';
+import type { Clock, WikimapiaTransport } from '../../contracts/wikimapia-client.schema';
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 /** Largest delay a Node timer accepts; larger values are clamped to 1 ms. */

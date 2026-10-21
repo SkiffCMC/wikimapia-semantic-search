@@ -21,10 +21,9 @@ import {
   type RawComment,
   type RawPlaceDetails,
   type RawPoint,
-} from '../../contracts/wikimapia-client.schema.js';
-import { toFailureIssues } from './issues.js';
-
-export type Normalized<T> = { ok: true; value: T } | { ok: false; issues: FailureIssue[] };
+} from '../../contracts/wikimapia-client.schema';
+import { toFailureIssues } from './issues';
+import type { Normalized } from './types';
 
 const UNSAFE_ID_MESSAGE = 'id is not a safe whole number';
 

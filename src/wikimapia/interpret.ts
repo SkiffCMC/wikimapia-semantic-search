@@ -9,18 +9,12 @@ import {
   RawDebugResponseSchema,
   RawPlaceDetailsSchema,
   parseRateLimitMessage,
-  type FailureIssue,
   type ListingPage,
   type PlaceDetails,
-} from '../../contracts/wikimapia-client.schema.js';
-import { toFailureIssues } from './issues.js';
-import { normalizeListingPage, normalizePlaceDetails, type Normalized } from './normalize.js';
-
-export type Interpretation<T> =
-  | { kind: 'data'; value: T }
-  | { kind: 'rate_limit'; waitSeconds: number | undefined }
-  | { kind: 'wikimapia_error'; message: string }
-  | { kind: 'unexpected'; issues: FailureIssue[] };
+} from '../../contracts/wikimapia-client.schema';
+import { toFailureIssues } from './issues';
+import { normalizeListingPage, normalizePlaceDetails } from './normalize';
+import type { Interpretation, Normalized } from './types';
 
 const NOT_JSON_MESSAGE = 'Wikimapia answer is not valid JSON';
 

@@ -4,7 +4,7 @@
  * input values are never copied (.agrules section 4, No Commenter IPs).
  */
 import type { z } from 'zod';
-import type { FailureIssue } from '../../contracts/wikimapia-client.schema.js';
+import type { FailureIssue } from '../../contracts/wikimapia-client.schema';
 
 export const MAX_REPORTED_ISSUES = 20;
 
