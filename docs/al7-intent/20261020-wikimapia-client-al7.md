@@ -1,0 +1,1 @@
+Stage 1, substep 1 from CLAUDE.md: Wikimapia API client for `box` and `place.getbyid`, including the debug rate-limit response. Raw recorded responses are in data/recordings/ (see "Verified behaviour" in CLAUDE.md).
