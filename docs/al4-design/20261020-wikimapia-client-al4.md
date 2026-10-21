@@ -2,8 +2,8 @@
 
 - **Feature:** `wikimapia-client` (Stage 1, substep 1)
 - **AL6 source:** `docs/al6-requirements/20261020-wikimapia-client-al6.md` (AC-1 .. AC-50)
-- **AL5 sources:** `contracts/wikimapia-client.schema.ts` (types, schemas, `ENTRY_POINT`), `contracts/wikimapia-client.test.ts` (66 behavioural tests), `contracts/wikimapia-client.schema.test.ts` (35 schema/fixture tests), `contracts/wikimapia-client.support.ts` (Simulated Wikimapia, Simulated Clock, fixture loaders), `contracts/fixtures/wikimapia/`
-- **Binding rules:** `.agrules` sections 1 (Offline Ingestion), 2 (Zod-validated boundaries), 4 (Licensing, No Commenter IPs, Recorded API Fixtures, No Live External Calls in Tests, Strict Types)
+- **AL5 sources:** `contracts/wikimapia-client.schema.ts` (types, schemas, `ENTRY_POINT`), `contracts/wikimapia-client.test.ts` (behavioural tests), `contracts/wikimapia-client.schema.test.ts` (schema/fixture tests), `contracts/wikimapia-client.support.ts` (Simulated Wikimapia, Simulated Clock, fixture loaders), `contracts/fixtures/wikimapia/`
+- **Binding rules:** `.agrules` sections 1 (Offline Ingestion), 2 (Zod-validated boundaries), 4 (Licensing, No Commenter IPs, Recorded API Fixtures, No Live External Calls in Tests, Strict Types), 5 (Code Style: extensionless relative imports, types in `types.ts`)
 - **Status:** Ready for AL3 Routing
 
 ## 0. Scope and Fixed Points
@@ -19,7 +19,12 @@ Fixed by AL5, not to be changed by AL3/AL2:
 | Constants | `WIKIMAPIA_API_URL`, `DEFAULT_PAGE_SIZE`, `MAX_PAGE_SIZE`, `DEFAULT_RETRY_LIMIT`, `DEFAULT_FALLBACK_WAIT_SECONDS`, `PLACE_DETAILS_DATA_BLOCKS` |
 | Validators | `parseRateLimitMessage`, `isWikimapiaPlaceUrl` (reuse them; do not re-implement) |
 
-**Single source of truth.** Every `src/wikimapia/*` module imports schemas, types and constants from `../../contracts/wikimapia-client.schema.js`. AL2 must not copy or redefine any of them. Use `import type` for type-only imports (`verbatimModuleSyntax`). Relative imports carry the `.js` suffix (`nodenext`).
+**Single source of truth.** Every `src/wikimapia/*` module imports schemas, types and constants from `../../contracts/wikimapia-client.schema`. AL2 must not copy or redefine any of them. Use `import type` for type-only imports (`verbatimModuleSyntax`).
+
+**Code style (`.agrules` section 5).**
+
+- **Extensionless relative imports.** `tsconfig.json` uses `"module": "preserve"` + `"moduleResolution": "bundler"`. Relative imports carry no extension: `from './issues'`, `from '../../contracts/wikimapia-client.schema'`, never `'./issues.js'` or `'./issues.ts'`. Runnable scripts go through `tsx` or a build step, not plain `node`.
+- **Types in `types.ts`.** Every type alias and interface declared in `src/wikimapia/` lives in `src/wikimapia/types.ts` (section 1.3) and is imported with `import type { ... } from './types'`. The other `src/wikimapia/*` modules declare and export no types. Types inferred from Zod schemas (`z.infer`) stay in `contracts/wikimapia-client.schema.ts` and are imported from there, not re-exported through `types.ts`.
 
 **HTTP framework:** not needed here, because this feature is a client and not a server. The open decision in `CLAUDE.md` stays open.
 
@@ -29,20 +34,21 @@ Fixed by AL5, not to be changed by AL3/AL2:
 
 ### 1.1 Module map
 
-All files are new. Files lower in the table depend only on files above them.
+Files lower in the table depend only on files above them. `types.ts` was added by the 2026-10-21 code-style refactor (section 4); the other files were created in U1 to U5.
 
 | File | Kind | Responsibility | Exports (internal unless marked public) |
 |---|---|---|---|
+| `src/wikimapia/types.ts` | types only | Holds every type alias and interface declared in `src/wikimapia/`. It has no runtime code and imports only `import type` from the schema file. | type `Normalized<T>`, type `Interpretation<T>`, type `ClientResult<T>`, interface `ExecuteDeps`, type `TransportOutcome` (used by `execute.ts` only), type `Resolved` (used by `client.ts` only) |
 | `src/wikimapia/issues.ts` | pure | Turns Zod issues into contract `FailureIssue`s and formats paths for messages. | `toFailureIssues`, `formatIssuePath`, `describeIssues`, `MAX_REPORTED_ISSUES` |
-| `src/wikimapia/normalize.ts` | pure | Maps validated raw wire objects to strict output objects. Runs the semantic checks that Zod wire schemas cannot express. Gates the result with the contract output schemas. | `normalizeListingPage`, `normalizePlaceDetails`, `normalizeComment`, type `Normalized<T>` |
-| `src/wikimapia/interpret.ts` | pure | Classifies one HTTP body: data, rate limit, Wikimapia error or unexpected response. | `interpretAnswer`, `interpretBoxAnswer`, `interpretPlaceDetailsAnswer`, type `Interpretation<T>` |
+| `src/wikimapia/normalize.ts` | pure | Maps validated raw wire objects to strict output objects. Runs the semantic checks that Zod wire schemas cannot express. Gates the result with the contract output schemas. | `normalizeListingPage`, `normalizePlaceDetails`, `normalizeComment` |
+| `src/wikimapia/interpret.ts` | pure | Classifies one HTTP body: data, rate limit, Wikimapia error or unexpected response. | `interpretAnswer`, `interpretBoxAnswer`, `interpretPlaceDetailsAnswer` |
 | `src/wikimapia/request.ts` | pure | Builds request URLs. | `buildBoxUrl`, `buildPlaceDetailsUrl` |
 | `src/wikimapia/redact.ts` | pure | Removes the API key and keyed request addresses from any failure text. | `redactSecrets`, `redactFailure` |
-| `src/wikimapia/execute.ts` | async core | Runs one client call: transport, status check, interpretation, rate-limit wait/retry loop, failure redaction. | `executeRequest`, type `ExecuteDeps`, type `ClientResult<T>` |
+| `src/wikimapia/execute.ts` | async core | Runs one client call: transport, status check, interpretation, rate-limit wait/retry loop, failure redaction. | `executeRequest` |
 | `src/wikimapia/runtime.ts` | I/O defaults | Real transport (global `fetch`) and real clock. Used only when the Operator injects none. | `createFetchTransport`, `systemClock`, `DEFAULT_REQUEST_TIMEOUT_MS`, `MAX_TIMER_DELAY_MS` |
 | `src/wikimapia/client.ts` | factory (**public**) | Resolves configuration and validates input, then composes the modules above. | `createWikimapiaClient` (public). It may also re-export `createFetchTransport` and `systemClock` for Operators. |
 
-Unit tests go in `tests/wikimapia/<module>.test.ts`. They may import the contract support module (`../../contracts/wikimapia-client.support.js`) for fixtures, `SimulatedWikimapia`, `SimulatedClock`, `addCommenterIps` and `at`. They must never edit anything under `contracts/`.
+Unit tests go in `tests/wikimapia/<module>.test.ts`. Tests import `src/wikimapia` modules extensionless (e.g. `../../src/wikimapia/execute`) and take the internal types (`Normalized`, `Interpretation`, `ClientResult`, `ExecuteDeps`) from `../../src/wikimapia/types` with `import type`. They may import the contract support module (`../../contracts/wikimapia-client.support`) for fixtures, `SimulatedWikimapia`, `SimulatedClock`, `addCommenterIps` and `at`. They must never edit anything under `contracts/`.
 
 ### 1.2 Call flow (both functions)
 
@@ -70,24 +76,36 @@ listPlaces(input) / getPlaceDetails(input)
 ### 1.3 Component contracts (signatures)
 
 ```ts
+// types.ts  (types only; no runtime code)
+import type { ClientFailure, Clock, FailureIssue, WikimapiaTransport } from '../../contracts/wikimapia-client.schema';
+export type Normalized<T> = { ok: true; value: T } | { ok: false; issues: FailureIssue[] };
+export type Interpretation<T> =
+  | { kind: 'data'; value: T }
+  | { kind: 'rate_limit'; waitSeconds: number | undefined }
+  | { kind: 'wikimapia_error'; message: string }
+  | { kind: 'unexpected'; issues: FailureIssue[] };
+export type ClientResult<T> = { ok: true; value: T } | { ok: false; failure: ClientFailure };
+export interface ExecuteDeps {
+  transport: WikimapiaTransport; clock: Clock; apiKey: string;
+  retryLimit: number; fallbackWaitSeconds: number;
+}
+export type TransportOutcome = { ok: true; response: unknown } | { ok: false; error: unknown };   // execute.ts only
+export type Resolved =                                                                              // client.ts only
+  | { ok: true; deps: ExecuteDeps; language: string | undefined }
+  | { ok: false; failure: ClientFailure };
+
 // issues.ts
 export const MAX_REPORTED_ISSUES = 20;
 export function toFailureIssues(issues: readonly z.core.$ZodIssue[]): FailureIssue[];   // >= 1 when input non-empty, capped at 20
 export function formatIssuePath(path: readonly (string | number)[]): string;           // ['comments',0,'replies',0,'name'] -> 'comments[0].replies[0].name'; [] -> '(whole answer)'
 export function describeIssues(prefix: string, issues: readonly FailureIssue[]): string; // 'prefix: <path>: <message>' for the first issue, plus ' (+N more)'
 
-// normalize.ts
-export type Normalized<T> = { ok: true; value: T } | { ok: false; issues: FailureIssue[] };
+// normalize.ts   (import type { Normalized } from './types')
 export function normalizeListingPage(raw: RawBoxResponse): Normalized<ListingPage>;
 export function normalizePlaceDetails(raw: RawPlaceDetails): Normalized<PlaceDetails>;
 export function normalizeComment(raw: RawComment): Comment;                              // recursive
 
-// interpret.ts
-export type Interpretation<T> =
-  | { kind: 'data'; value: T }
-  | { kind: 'rate_limit'; waitSeconds: number | undefined }
-  | { kind: 'wikimapia_error'; message: string }
-  | { kind: 'unexpected'; issues: FailureIssue[] };
+// interpret.ts   (import type { Interpretation, Normalized } from './types')
 export function interpretAnswer<S extends z.ZodType, T>(
   body: string, rawSchema: S, normalize: (raw: z.output<S>) => Normalized<T>,
 ): Interpretation<T>;
@@ -102,12 +120,7 @@ export function buildPlaceDetailsUrl(p: { apiKey: string; language?: string; pla
 export function redactSecrets(text: string, apiKey: string): string;
 export function redactFailure(failure: ClientFailure, apiKey: string): ClientFailure;
 
-// execute.ts
-export type ClientResult<T> = { ok: true; value: T } | { ok: false; failure: ClientFailure };
-export interface ExecuteDeps {
-  transport: WikimapiaTransport; clock: Clock; apiKey: string;
-  retryLimit: number; fallbackWaitSeconds: number;
-}
+// execute.ts     (import type { ClientResult, ExecuteDeps, Interpretation, TransportOutcome } from './types')
 export function executeRequest<T>(
   url: string, interpret: (body: string) => Interpretation<T>, deps: ExecuteDeps,
 ): Promise<ClientResult<T>>;                                                             // never rejects
@@ -117,9 +130,13 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 export const MAX_TIMER_DELAY_MS = 2_147_483_647;
 export function createFetchTransport(options?: { timeoutMs?: number }): WikimapiaTransport;
 export const systemClock: Clock;
+
+// client.ts      (import type { Resolved } from './types'; ExecuteDeps is used here only inside Resolved, so importing it too fails lint as unused)
+export const createWikimapiaClient: CreateWikimapiaClientFn;
+export { createFetchTransport, systemClock } from './runtime';
 ```
 
-`ClientResult<ListingPage>` and `ClientResult<PlaceDetails>` must be assignable to the contract's `ListPlacesResult` and `PlaceDetailsResult`. If they are not, use the contract types directly.
+`TransportOutcome` and `Resolved` are exported from `types.ts` only so that their single consumer can import them. They are not part of any other module's surface, and tests should not depend on them. `ClientResult<ListingPage>` and `ClientResult<PlaceDetails>` must be assignable to the contract's `ListPlacesResult` and `PlaceDetailsResult`. If they are not, use the contract types directly.
 
 ### 1.4 Detailed behaviour per subsystem
 
@@ -332,7 +349,9 @@ This feature makes no OpenAI calls and runs no batch job. Its only external syst
 
 Units are ordered by dependency. Each one can be routed, tested and implemented in one AL3 -> AL2 iteration, and each has its own unit tests in `tests/wikimapia/`. The behavioural contract file imports `src/wikimapia/client.ts`, so it can only turn green in U5. The ACs listed for U1 to U4 are the ones each unit implements; U5 verifies them end to end.
 
-**Baseline caveat for U1 to U4:** until U5 creates `src/wikimapia/client.ts`, `pnpm exec tsc --noEmit` and `pnpm lint` each still report the single known error for the missing `../src/wikimapia/client.js` import in `contracts/wikimapia-client.test.ts`. "No new errors" in the Done-when lists below means that this is the only error reported.
+**Refactor note (2026-10-21, code style, `.agrules` section 5):** behaviour is unchanged. The type aliases and interfaces that U1 to U5 originally declared in their modules (`Normalized<T>` in `normalize.ts`, `Interpretation<T>` in `interpret.ts`, `ClientResult<T>`, `ExecuteDeps` and `TransportOutcome` in `execute.ts`, `Resolved` in `client.ts`) now live in `src/wikimapia/types.ts` (sections 1.1 and 1.3). The source modules no longer export them, and tests import them from `../../src/wikimapia/types` with `import type`. All relative imports in `src/`, `tests/` and `contracts/` are extensionless. Wherever the units below say a module provides one of these types, read it as `types.ts`. This refactor is routed as one corrective unit, not as a new unit here. Done when: `pnpm exec vitest run --no-color tests/wikimapia contracts` is still all green (all contract tests pass: 127 as counted by Vitest on 2026-10-21, since `it.each` cases count separately and the HTTPS change added 3 tests), `pnpm exec tsc --noEmit` reports 0 errors, `pnpm lint` reports 0 problems, and no relative import under `src/` or `tests/` ends in `.js` or `.ts`.
+
+**Baseline caveat for U1 to U4 (historical):** until U5 created `src/wikimapia/client.ts`, `pnpm exec tsc --noEmit` and `pnpm lint` each reported the single known error for the missing `../src/wikimapia/client` import in `contracts/wikimapia-client.test.ts`. "No new errors" in the Done-when lists below means that this is the only error reported.
 
 ### U1. Issue mapping and normalisation (pure)
 
@@ -342,7 +361,7 @@ Units are ordered by dependency. Each one can be routed, tested and implemented 
 - **Unit tests must cover:** University Park summary exactly as in AC-2; the comments of 62587 as in AC-10; nested Mateja -> Serbia -> Paul; 12-level chain; optional values absent for `null` and `''`; `parent_id` `"0"` vs `"7291521"`; extra keys dropped (`Object.keys` allow-list); no `user_ip` at any depth after `addCommenterIps` (check with `findCommenterIpPaths`); semantic-check issues at `['folder',0,'url']`, `['count']`, `['page']`, `['folder',0,'id']` (unsafe integer string); every success value passes the contract output schemas; `toFailureIssues` path formatting, symbol mapping, cap of 20, never empty.
 - **Done when:**
   - `pnpm exec vitest run --no-color tests/wikimapia/issues.test.ts tests/wikimapia/normalize.test.ts` passes
-  - `pnpm exec vitest run --no-color contracts/wikimapia-client.schema.test.ts` still 35/35 green
+  - `pnpm exec vitest run --no-color contracts/wikimapia-client.schema.test.ts` still all green
   - `pnpm exec eslint src/wikimapia tests/wikimapia` reports no problems
   - `pnpm exec tsc --noEmit` reports no new errors (baseline caveat)
 
@@ -372,7 +391,7 @@ Units are ordered by dependency. Each one can be routed, tested and implemented 
 ### U4. Execution core: transport, status, rate-limit loop
 
 - **Files:** `src/wikimapia/execute.ts`, `tests/wikimapia/execute.test.ts`
-- **Depends on:** U2 (the `Interpretation` type and the interpreters), U3 (`redactFailure`)
+- **Depends on:** U2 (the interpreters; the `Interpretation` type now comes from `types.ts`), U3 (`redactFailure`)
 - **Design refs:** 1.4.7, 1.4.8, 1.5
 - **Implements ACs:** AC-22 .. AC-30, AC-32, AC-33, AC-34, AC-36, AC-48, AC-49
 - **Unit tests** (use `SimulatedWikimapia` and `SimulatedClock` from the contract support file and a fixed test URL) **must cover:** 7 s wait then success (identical URLs); 3 s + 5 s; defaults of 5 retries (6 requests, 5 sleeps, `attempts: 6`); `retryLimit` 0 (1 request, no sleep); unreadable wait (fallback); wait of 0 (no `sleep` call, still counted); 86400 s; manual-clock ordering `['request','sleep:7000','request']`; unreachable gives `connection` with no `status` key and no URL or key in the failure; statuses 404, 500, 502 and 503 give `connection` with `status`; a malformed transport result gives `unexpected_response`; a throwing transport and a rejecting clock still resolve; no retry for Wikimapia errors or unexpected responses.
@@ -390,14 +409,16 @@ Units are ordered by dependency. Each one can be routed, tested and implemented 
 - **Unit tests must cover:** `createFetchTransport` with `vi.spyOn(globalThis, 'fetch')` mocked (URL passed, `signal` present, status and body mapped, rejection propagated; **no real network**); `systemClock.sleep` with `vi.useFakeTimers()`, including a delay above `MAX_TIMER_DELAY_MS` that resolves only after the full time; the factory does not throw for `{}`, `apiKey: ''`, `apiKey: '   '` or `language: 'eng'`, and each of these gives `configuration` with zero requests; the trimmed key is sent; creating a client without a transport does not call `fetch`.
 - **Done when:**
   - `pnpm exec vitest run --no-color tests/wikimapia` passes
-  - `pnpm exec vitest run --no-color contracts` passes **101/101** (66 behavioural + 35 schema/fixture)
+  - `pnpm exec vitest run --no-color contracts` passes (all contract tests green; no hard count, since Vitest counts `it.each` cases separately)
   - `pnpm exec tsc --noEmit` reports **0 errors**
   - `pnpm lint` reports **0 problems**
 
 ## 5. AL2 Guidance (toolchain pitfalls)
 
+- Module resolution is `"module": "preserve"` + `"moduleResolution": "bundler"`, not `nodenext`. Write relative imports without an extension (`from './types'`, `from '../../contracts/wikimapia-client.schema'`). Do not add `.js` or `.ts`, and do not turn on `allowImportingTsExtensions`.
+- Declare no `type` or `interface` outside `src/wikimapia/types.ts`. Import from it with a top-level `import type { ... } from './types'` (`verbatimModuleSyntax`), not with inline `type` specifiers mixed into a value import. A value import of `./types` would be wrong, since the module has no runtime exports. Do not re-export contract `z.infer` types from `types.ts`.
 - `strictTypeChecked`: use `String(n)` in template literals (`restrict-template-expressions`); no non-null assertions (use `at`-style guards or `noUncheckedIndexedAccess`-safe loops); a public method with no `await` should not be `async` (`require-await`), so return `Promise.resolve(...)` instead; no floating promises.
 - `exactOptionalPropertyTypes`: never assign `undefined` to an optional output key. Leave the key out instead (the contract output schemas use `exactOptional()` and reject an explicit `undefined`).
 - Zod 4: `z.core.$ZodIssue` is the issue type; `safeParse(...).error.issues`; never `parse` (which throws) on external data inside the client.
 - Do not `console.log` (lint warns, and logs could leak data). Observability belongs to substep 3, which can wrap the injected transport and clock.
-- Do not edit `contracts/` or its fixtures. If a contract looks wrong, stop and report it (`.agrules` section 0, Triggered Bugfixing).
+- Do not edit `contracts/` or its fixtures. If a contract looks wrong, stop and report it (`.agrules` section 0, Triggered Bugfixing). All relative imports in `src/`, `tests/` and `contracts/` are extensionless (AL5 removed the last `.js` extensions from `contracts/*.ts` on 2026-10-21, as `.agrules` section 5 requires); keep them that way.
