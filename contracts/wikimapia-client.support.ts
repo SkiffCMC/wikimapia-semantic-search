@@ -21,7 +21,7 @@ import {
   type TransportRequest,
   type TransportResponse,
   type WikimapiaTransport,
-} from './wikimapia-client.schema.js';
+} from './wikimapia-client.schema';
 
 /** Synthetic API Key. Not a real key; must never appear in any failure (AC-36). */
 export const TEST_API_KEY = 'wm-test-key-0000-synthetic';
