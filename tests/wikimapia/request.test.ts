@@ -6,14 +6,14 @@
  * and `searchParams`, never by substring matching on the raw string. No transport, no clock,
  * no network, no real keys.
  */
-import { buildBoxUrl, buildPlaceDetailsUrl } from '../../src/wikimapia/request.js';
+import { buildBoxUrl, buildPlaceDetailsUrl } from '../../src/wikimapia/request';
 import {
   PLACE_DETAILS_DATA_BLOCKS,
   TransportRequestSchema,
   WIKIMAPIA_API_URL,
   type BoundingBox,
-} from '../../contracts/wikimapia-client.schema.js';
-import { TEST_API_KEY } from '../../contracts/wikimapia-client.support.js';
+} from '../../contracts/wikimapia-client.schema';
+import { TEST_API_KEY } from '../../contracts/wikimapia-client.support';
 
 // ---------------------------------------------------------------------------
 // Helpers

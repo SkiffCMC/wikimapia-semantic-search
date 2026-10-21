@@ -12,12 +12,12 @@ import {
   MAX_TIMER_DELAY_MS,
   createFetchTransport,
   systemClock,
-} from '../../src/wikimapia/runtime.js';
+} from '../../src/wikimapia/runtime';
 import {
   TransportResponseSchema,
   type WikimapiaTransport,
-} from '../../contracts/wikimapia-client.schema.js';
-import { TEST_API_KEY, fixtureText } from '../../contracts/wikimapia-client.support.js';
+} from '../../contracts/wikimapia-client.schema';
+import { TEST_API_KEY, fixtureText } from '../../contracts/wikimapia-client.support';
 
 // ---------------------------------------------------------------------------
 // Network guard and helpers

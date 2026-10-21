@@ -11,19 +11,18 @@ import {
   interpretAnswer,
   interpretBoxAnswer,
   interpretPlaceDetailsAnswer,
-  type Interpretation,
-} from '../../src/wikimapia/interpret.js';
+} from '../../src/wikimapia/interpret';
 import {
   normalizeListingPage,
   normalizePlaceDetails,
-  type Normalized,
-} from '../../src/wikimapia/normalize.js';
+} from '../../src/wikimapia/normalize';
+import type { Interpretation, Normalized } from '../../src/wikimapia/types';
 import {
   FailureIssueSchema,
   ListingPageSchema,
   PlaceDetailsSchema,
   type FailureIssue,
-} from '../../contracts/wikimapia-client.schema.js';
+} from '../../contracts/wikimapia-client.schema';
 import {
   SYNTHETIC_IPS,
   TEST_API_KEY,
@@ -34,7 +33,7 @@ import {
   rawBox,
   rawDetails,
   type FixtureName,
-} from '../../contracts/wikimapia-client.support.js';
+} from '../../contracts/wikimapia-client.support';
 
 // ---------------------------------------------------------------------------
 // Helpers
