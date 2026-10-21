@@ -1,0 +1,90 @@
+{
+  "id": 1381893,
+  "object_type": 1,
+  "language_id": 0,
+  "language_iso": "en",
+  "language_name": "English",
+  "urlhtml": "<a class=\"wikimapia-link\" href=\"http://wikimapia.org/1381893/University-Park\">University Park</a>",
+  "title": "University Park",
+  "description": "Belgrade,Serbia.",
+  "is_building": false,
+  "is_region": false,
+  "is_deleted": false,
+  "tags": [
+    {
+      "id": 194,
+      "title": "park"
+    }
+  ],
+  "parent_id": "0",
+  "x": "204578760",
+  "y": "448195240",
+  "pl": 1113,
+  "polygon": [
+    {
+      "x": 20.456688,
+      "y": 44.8198
+    },
+    {
+      "x": 20.457444,
+      "y": 44.820321
+    },
+    {
+      "x": 20.459064,
+      "y": 44.819145
+    },
+    {
+      "x": 20.458394,
+      "y": 44.818727
+    }
+  ],
+  "comments": [],
+  "location": {
+    "lon": 20.457876,
+    "lat": 44.819524,
+    "north": 44.820321,
+    "south": 44.818727,
+    "east": 20.459064,
+    "west": 20.456688,
+    "country": "Serbia and Montenegro",
+    "state": "Central Serbia",
+    "place": "Belgrade",
+    "country_adm_id": 198295,
+    "gadm": [
+      {
+        "id": "1000",
+        "country": "0",
+        "level": "0",
+        "is_last_level": "0",
+        "name": "World",
+        "iso": null,
+        "type": null,
+        "translation": "World"
+      },
+      {
+        "id": "196",
+        "country": "196",
+        "level": "0",
+        "is_last_level": "0",
+        "name": "Serbia",
+        "iso": null,
+        "type": null,
+        "translation": "Serbia"
+      },
+      {
+        "id": "198205",
+        "country": "196",
+        "level": "1",
+        "is_last_level": "0",
+        "name": "Grad Beograd",
+        "iso": null,
+        "type": null,
+        "translation": "Grad Beograd"
+      }
+    ],
+    "city_id": "4875860",
+    "city": "Belgrade",
+    "cityguideDomain": null,
+    "zoom": 16
+  }
+}

@@ -1,0 +1,620 @@
+{
+  "id": 55,
+  "object_type": 1,
+  "language_id": 0,
+  "language_iso": "en",
+  "language_name": "English",
+  "urlhtml": "<a class=\"wikimapia-link\" href=\"http://wikimapia.org/55/Eiffel-Tower\">Eiffel Tower</a>",
+  "title": "Eiffel Tower",
+  "description": "Champ de Mars, 5 Avenue Anatole France\n75007 Paris, France\nPhone:+33 892 70 12 39\nhttp://www.tour-eiffel.fr\n\nThe Eiffel Tower (French: La Tour Eiffel, [tuʁ ɛfɛl], nickname La dame de fer, the iron lady) is a puddle iron lattice tower located on the Champ de Mars in Paris. Built in 1889, it has become both a global icon of France and one of the most recognizable structures in the world. The tower is the tallest building in Paris and the most-visited paid monument in the world; millions of people ascend it every year. Named for its designer, engineer Gustave Eiffel, the tower was built as the entrance arch to the 1889 World's Fair. This Parisian landmark named after its engineer designer, Gustave Eiffel, is one of the most recognised structures in the world and is the tallest structure in Paris, and with 200,000,000 having visited the Eiffel Tower since its construction, this monument is the most visited paid monument in Paris and perhaps on Earth.\n\nThe tower has three levels for visitors. Tickets can be purchased to ascend, by stairs or lift (elevator), to the first and second levels. The stairs are open to the public (€ 5) and ascend to the second level, which is at a height of 115m. The walk from ground level to the first level is over 300 steps, as is the walk from the first to the second level. Three lifts (pillars North, East, West) serve the 1st and 2nd floors (€ 8.50). One or two of them, chosen according to the needs of maintenance or safety, may be in operation at any time. The third and highest level is only accessible by lift and must be taken by changing elevators at the second level (€ 14) - stairs exist but they are not usually open for public use. Both the first and second levels feature restaurants. \n\nhttp://www.youtube.com/watch?v=sTi2F0MA1sQ\nhttp://www.youtube.com/watch?v=pLtAwl7WSLM",
+  "wikipedia": "http://en.wikipedia.org/wiki/Eiffel_Tower",
+  "is_building": true,
+  "is_region": false,
+  "is_deleted": false,
+  "tags": [
+    {
+      "id": 55,
+      "title": "tower"
+    },
+    {
+      "id": 81,
+      "title": "Eiffel"
+    },
+    {
+      "id": 53756,
+      "title": "tourist attraction"
+    },
+    {
+      "id": 58357,
+      "title": "1889_construction"
+    }
+  ],
+  "parent_id": "0",
+  "x": "22945074",
+  "y": "488582537",
+  "pl": 1033.9494668503,
+  "polygon": [
+    {
+      "x": 2.2935636,
+      "y": 48.8580886
+    },
+    {
+      "x": 2.2933061,
+      "y": 48.8582457
+    },
+    {
+      "x": 2.2935366,
+      "y": 48.8584053
+    },
+    {
+      "x": 2.2935553,
+      "y": 48.8583952
+    },
+    {
+      "x": 2.2935683,
+      "y": 48.858404
+    },
+    {
+      "x": 2.2935969,
+      "y": 48.8583864
+    },
+    {
+      "x": 2.2936039,
+      "y": 48.8583754
+    },
+    {
+      "x": 2.2936267,
+      "y": 48.8583619
+    },
+    {
+      "x": 2.2936641,
+      "y": 48.8583533
+    },
+    {
+      "x": 2.293731,
+      "y": 48.8583467
+    },
+    {
+      "x": 2.29379,
+      "y": 48.8583494
+    },
+    {
+      "x": 2.2938626,
+      "y": 48.858363
+    },
+    {
+      "x": 2.293929,
+      "y": 48.8583815
+    },
+    {
+      "x": 2.2939868,
+      "y": 48.8584024
+    },
+    {
+      "x": 2.2940382,
+      "y": 48.8584274
+    },
+    {
+      "x": 2.2940806,
+      "y": 48.8584479
+    },
+    {
+      "x": 2.2941334,
+      "y": 48.8584812
+    },
+    {
+      "x": 2.2942013,
+      "y": 48.8585273
+    },
+    {
+      "x": 2.2942407,
+      "y": 48.8585615
+    },
+    {
+      "x": 2.2942902,
+      "y": 48.8586083
+    },
+    {
+      "x": 2.2943307,
+      "y": 48.8586674
+    },
+    {
+      "x": 2.2943502,
+      "y": 48.8587064
+    },
+    {
+      "x": 2.2943582,
+      "y": 48.8587327
+    },
+    {
+      "x": 2.2943603,
+      "y": 48.8587618
+    },
+    {
+      "x": 2.2943562,
+      "y": 48.8587835
+    },
+    {
+      "x": 2.2943467,
+      "y": 48.8587773
+    },
+    {
+      "x": 2.2942697,
+      "y": 48.8588274
+    },
+    {
+      "x": 2.2942984,
+      "y": 48.8588461
+    },
+    {
+      "x": 2.2942608,
+      "y": 48.8588704
+    },
+    {
+      "x": 2.2942764,
+      "y": 48.85888
+    },
+    {
+      "x": 2.2942582,
+      "y": 48.8588933
+    },
+    {
+      "x": 2.2944767,
+      "y": 48.8590372
+    },
+    {
+      "x": 2.2947121,
+      "y": 48.8588911
+    },
+    {
+      "x": 2.2947022,
+      "y": 48.8588842
+    },
+    {
+      "x": 2.2947177,
+      "y": 48.8588745
+    },
+    {
+      "x": 2.2946859,
+      "y": 48.8588514
+    },
+    {
+      "x": 2.2946718,
+      "y": 48.858816
+    },
+    {
+      "x": 2.2946871,
+      "y": 48.858777
+    },
+    {
+      "x": 2.294703,
+      "y": 48.8587384
+    },
+    {
+      "x": 2.2947274,
+      "y": 48.8586996
+    },
+    {
+      "x": 2.2947684,
+      "y": 48.8586528
+    },
+    {
+      "x": 2.294823,
+      "y": 48.858599
+    },
+    {
+      "x": 2.294859,
+      "y": 48.8585707
+    },
+    {
+      "x": 2.2949233,
+      "y": 48.8585249
+    },
+    {
+      "x": 2.2950077,
+      "y": 48.858471
+    },
+    {
+      "x": 2.2951005,
+      "y": 48.8584177
+    },
+    {
+      "x": 2.2951944,
+      "y": 48.8583832
+    },
+    {
+      "x": 2.2952412,
+      "y": 48.8583699
+    },
+    {
+      "x": 2.2952907,
+      "y": 48.8583603
+    },
+    {
+      "x": 2.2953404,
+      "y": 48.8583599
+    },
+    {
+      "x": 2.295386,
+      "y": 48.85837
+    },
+    {
+      "x": 2.2954077,
+      "y": 48.8583866
+    },
+    {
+      "x": 2.2953941,
+      "y": 48.8583997
+    },
+    {
+      "x": 2.2954295,
+      "y": 48.8584212
+    },
+    {
+      "x": 2.2954577,
+      "y": 48.8584019
+    },
+    {
+      "x": 2.2954772,
+      "y": 48.858415
+    },
+    {
+      "x": 2.2957088,
+      "y": 48.8582704
+    },
+    {
+      "x": 2.2954718,
+      "y": 48.8581142
+    },
+    {
+      "x": 2.295455,
+      "y": 48.8581283
+    },
+    {
+      "x": 2.2954363,
+      "y": 48.8581186
+    },
+    {
+      "x": 2.2954067,
+      "y": 48.8581376
+    },
+    {
+      "x": 2.2954189,
+      "y": 48.8581441
+    },
+    {
+      "x": 2.2953956,
+      "y": 48.8581488
+    },
+    {
+      "x": 2.29536,
+      "y": 48.8581496
+    },
+    {
+      "x": 2.2953177,
+      "y": 48.8581419
+    },
+    {
+      "x": 2.2952708,
+      "y": 48.8581299
+    },
+    {
+      "x": 2.295213,
+      "y": 48.8581079
+    },
+    {
+      "x": 2.2951553,
+      "y": 48.8580832
+    },
+    {
+      "x": 2.2950951,
+      "y": 48.8580526
+    },
+    {
+      "x": 2.2950346,
+      "y": 48.8580172
+    },
+    {
+      "x": 2.2949744,
+      "y": 48.857979
+    },
+    {
+      "x": 2.2949255,
+      "y": 48.8579433
+    },
+    {
+      "x": 2.2948651,
+      "y": 48.857896
+    },
+    {
+      "x": 2.2948021,
+      "y": 48.8578405
+    },
+    {
+      "x": 2.2947517,
+      "y": 48.8577859
+    },
+    {
+      "x": 2.2947209,
+      "y": 48.8577435
+    },
+    {
+      "x": 2.2947087,
+      "y": 48.8577101
+    },
+    {
+      "x": 2.2947022,
+      "y": 48.8576953
+    },
+    {
+      "x": 2.2947034,
+      "y": 48.8576767
+    },
+    {
+      "x": 2.2947088,
+      "y": 48.8576644
+    },
+    {
+      "x": 2.2947168,
+      "y": 48.8576564
+    },
+    {
+      "x": 2.2947277,
+      "y": 48.8576555
+    },
+    {
+      "x": 2.2947491,
+      "y": 48.8576485
+    },
+    {
+      "x": 2.2947323,
+      "y": 48.8576366
+    },
+    {
+      "x": 2.2947505,
+      "y": 48.857626
+    },
+    {
+      "x": 2.294521,
+      "y": 48.8574703
+    },
+    {
+      "x": 2.2942843,
+      "y": 48.857622
+    },
+    {
+      "x": 2.2943004,
+      "y": 48.8576312
+    },
+    {
+      "x": 2.2942836,
+      "y": 48.857643
+    },
+    {
+      "x": 2.294322,
+      "y": 48.8576657
+    },
+    {
+      "x": 2.2943361,
+      "y": 48.8576563
+    },
+    {
+      "x": 2.2943613,
+      "y": 48.8576743
+    },
+    {
+      "x": 2.2943763,
+      "y": 48.8576947
+    },
+    {
+      "x": 2.2943828,
+      "y": 48.8577194
+    },
+    {
+      "x": 2.2943804,
+      "y": 48.857746
+    },
+    {
+      "x": 2.2943721,
+      "y": 48.8577674
+    },
+    {
+      "x": 2.2943455,
+      "y": 48.8578137
+    },
+    {
+      "x": 2.2943212,
+      "y": 48.857845
+    },
+    {
+      "x": 2.2942851,
+      "y": 48.8578765
+    },
+    {
+      "x": 2.2942433,
+      "y": 48.8579091
+    },
+    {
+      "x": 2.2942086,
+      "y": 48.8579373
+    },
+    {
+      "x": 2.2941737,
+      "y": 48.8579589
+    },
+    {
+      "x": 2.2941235,
+      "y": 48.8579915
+    },
+    {
+      "x": 2.2940576,
+      "y": 48.8580282
+    },
+    {
+      "x": 2.293966,
+      "y": 48.8580689
+    },
+    {
+      "x": 2.2938927,
+      "y": 48.8580946
+    },
+    {
+      "x": 2.2938466,
+      "y": 48.8581071
+    },
+    {
+      "x": 2.2937714,
+      "y": 48.8581229
+    },
+    {
+      "x": 2.2937177,
+      "y": 48.8581309
+    },
+    {
+      "x": 2.293664,
+      "y": 48.8581317
+    },
+    {
+      "x": 2.2936291,
+      "y": 48.8581283
+    },
+    {
+      "x": 2.2936078,
+      "y": 48.8581212
+    }
+  ],
+  "comments": [
+    {
+      "place_id": 55,
+      "num": 1,
+      "lang_id": 0,
+      "user_id": 0,
+      "user_photo": "",
+      "name": "Ramona",
+      "message": "the most beautiful city in the world!just go there and try to visit him,walking,in the beuttiful lights from a late autumn!",
+      "good": 11,
+      "bad": 17,
+      "block": false,
+      "date": 1163698281,
+      "moder_uid": 0,
+      "moder_name": null,
+      "is_deleted": false,
+      "replies": []
+    },
+    {
+      "place_id": 55,
+      "num": 5,
+      "lang_id": 0,
+      "user_id": 0,
+      "user_photo": "",
+      "name": "Paul",
+      "message": "It's a big fancy tower that was built in the late 1880s to commemorate the centenary of the French Revolution.\r\n",
+      "good": 0,
+      "bad": 2,
+      "block": false,
+      "date": 1168829553,
+      "moder_uid": 1680617,
+      "moder_name": "Extram",
+      "is_deleted": false,
+      "replies": []
+    },
+    {
+      "place_id": 55,
+      "num": 141,
+      "lang_id": 0,
+      "user_id": 589032,
+      "user_photo": "/p/u/00/00/58/90/32_50.jpg",
+      "name": "w8r",
+      "message": "did it kill anyone?",
+      "good": 6,
+      "bad": 4,
+      "block": false,
+      "date": 1284576184,
+      "moder_uid": 36096,
+      "moder_name": "RK77",
+      "is_deleted": false,
+      "replies": []
+    }
+  ],
+  "location": {
+    "lon": 2.2945074,
+    "lat": 48.8582537,
+    "north": 48.8590372,
+    "south": 48.8574703,
+    "east": 2.2957088,
+    "west": 2.2933061,
+    "housenumber": "5",
+    "street_id": "331907",
+    "street": "Champ de Mars",
+    "country": "France",
+    "state": "Ile-de-France",
+    "place": "Vanves",
+    "country_adm_id": 101056,
+    "gadm": [
+      {
+        "id": "74",
+        "country": "74",
+        "level": "0",
+        "is_last_level": "0",
+        "name": "France",
+        "iso": null,
+        "type": null,
+        "translation": "France"
+      },
+      {
+        "id": "1000",
+        "country": "0",
+        "level": "0",
+        "is_last_level": "0",
+        "name": "World",
+        "iso": null,
+        "type": null,
+        "translation": "World"
+      },
+      {
+        "id": "60533",
+        "country": "74",
+        "level": "1",
+        "is_last_level": "0",
+        "name": "Île-de-France",
+        "iso": null,
+        "type": null,
+        "translation": "Île-de-France"
+      },
+      {
+        "id": "83881",
+        "country": "74",
+        "level": "2",
+        "is_last_level": "0",
+        "name": "Paris",
+        "iso": null,
+        "type": null,
+        "translation": "Paris"
+      },
+      {
+        "id": "101054",
+        "country": "74",
+        "level": "3",
+        "is_last_level": "0",
+        "name": "Paris, 7e arrondissement",
+        "iso": null,
+        "type": null,
+        "translation": "Paris, 7e arrondissement"
+      },
+      {
+        "id": "101055",
+        "country": "74",
+        "level": "4",
+        "is_last_level": "0",
+        "name": "Paris, 7e arrondissement",
+        "iso": null,
+        "type": null,
+        "translation": "Paris, 7e arrondissement"
+      }
+    ],
+    "city_id": "5009811",
+    "city": "Paris",
+    "cityguideDomain": "paris",
+    "zoom": 16
+  }
+}
