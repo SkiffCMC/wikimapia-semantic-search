@@ -1,0 +1,5 @@
+node_modules/
+.env
+.add/reports/
+data/
+*.dump

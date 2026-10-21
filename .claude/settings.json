@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/add-metrics.mjs record"
+          }
+        ]
+      }
+    ]
+  }
+}
