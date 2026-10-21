@@ -86,6 +86,7 @@ Four decoupled components:
 - **Data source:** the Wikimapia API, crawled offline into Postgres; dumps are too hard to obtain. Search never calls Wikimapia live; it queries the local index.
 - **Database access:** Knex (migrations, query builder) + Objection (models). PostGIS and pgvector columns go through `knex.raw` and the `pgvector` npm package.
 - **Embeddings:** `text-embedding-3-small` via the OpenAI API, 1536-dim. `bge-m3` is dropped (it is 1024-dim). Changing the model later means re-embedding everything.
+- **Module resolution:** `module: preserve` + `moduleResolution: bundler` (decided 2026-10-21), so relative imports are extensionless. Runnable scripts (ETL, crawl, embedding jobs) run through `tsx` or a build step, not plain `node`.
 
 ## Open Decisions
 

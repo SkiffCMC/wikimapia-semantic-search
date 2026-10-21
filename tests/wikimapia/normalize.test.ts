@@ -9,8 +9,8 @@ import {
   normalizeComment,
   normalizeListingPage,
   normalizePlaceDetails,
-  type Normalized,
-} from '../../src/wikimapia/normalize.js';
+} from '../../src/wikimapia/normalize';
+import type { Normalized } from '../../src/wikimapia/types';
 import {
   CommentSchema,
   FailureIssueSchema,
@@ -20,7 +20,7 @@ import {
   type Comment,
   type FailureIssue,
   type RawComment,
-} from '../../contracts/wikimapia-client.schema.js';
+} from '../../contracts/wikimapia-client.schema';
 import {
   SYNTHETIC_IPS,
   addCommenterIps,
@@ -28,7 +28,7 @@ import {
   rawBox,
   rawDetails,
   type FixtureName,
-} from '../../contracts/wikimapia-client.support.js';
+} from '../../contracts/wikimapia-client.support';
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -14,16 +14,16 @@ import {
   createFetchTransport,
   createWikimapiaClient,
   systemClock,
-} from '../../src/wikimapia/client.js';
+} from '../../src/wikimapia/client';
 import {
   createFetchTransport as runtimeCreateFetchTransport,
   systemClock as runtimeSystemClock,
-} from '../../src/wikimapia/runtime.js';
+} from '../../src/wikimapia/runtime';
 import {
   interpretBoxAnswer,
   interpretPlaceDetailsAnswer,
-  type Interpretation,
-} from '../../src/wikimapia/interpret.js';
+} from '../../src/wikimapia/interpret';
+import type { Interpretation } from '../../src/wikimapia/types';
 import {
   DEFAULT_FALLBACK_WAIT_SECONDS,
   DEFAULT_PAGE_SIZE,
@@ -42,7 +42,7 @@ import {
   type WikimapiaClient,
   type WikimapiaClientOptions,
   type WikimapiaTransport,
-} from '../../contracts/wikimapia-client.schema.js';
+} from '../../contracts/wikimapia-client.schema';
 import {
   SimulatedClock,
   SimulatedWikimapia,
@@ -54,7 +54,7 @@ import {
   rateLimitAnswer,
   type FixtureName,
   type SimulatedAnswer,
-} from '../../contracts/wikimapia-client.support.js';
+} from '../../contracts/wikimapia-client.support';
 
 // ---------------------------------------------------------------------------
 // Entry point (compile-time check)

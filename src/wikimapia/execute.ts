@@ -8,24 +8,13 @@
 import {
   TransportResponseSchema,
   type ClientFailure,
-  type Clock,
   type FailureIssue,
   type TransportResponse,
   type WikimapiaTransport,
-} from '../../contracts/wikimapia-client.schema.js';
-import type { Interpretation } from './interpret.js';
-import { describeIssues } from './issues.js';
-import { redactFailure } from './redact.js';
-
-export type ClientResult<T> = { ok: true; value: T } | { ok: false; failure: ClientFailure };
-
-export interface ExecuteDeps {
-  transport: WikimapiaTransport;
-  clock: Clock;
-  apiKey: string;
-  retryLimit: number;
-  fallbackWaitSeconds: number;
-}
+} from '../../contracts/wikimapia-client.schema';
+import { describeIssues } from './issues';
+import { redactFailure } from './redact';
+import type { ClientResult, ExecuteDeps, Interpretation, TransportOutcome } from './types';
 
 const UNEXPECTED_PREFIX = 'Unexpected Wikimapia response';
 const CONNECTION_MESSAGE = 'Wikimapia could not be reached';
@@ -61,8 +50,6 @@ function connectionFailure(error: unknown): ClientFailure {
     message: code === undefined ? CONNECTION_MESSAGE : `${CONNECTION_MESSAGE} (${code})`,
   };
 }
-
-type TransportOutcome = { ok: true; response: unknown } | { ok: false; error: unknown };
 
 async function callTransport(
   transport: WikimapiaTransport,

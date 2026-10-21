@@ -7,7 +7,7 @@ import {
   PLACE_DETAILS_DATA_BLOCKS,
   WIKIMAPIA_API_URL,
   type BoundingBox,
-} from '../../contracts/wikimapia-client.schema.js';
+} from '../../contracts/wikimapia-client.schema';
 
 function baseUrl(apiFunction: string, apiKey: string, language: string | undefined): URL {
   const url = new URL(WIKIMAPIA_API_URL);

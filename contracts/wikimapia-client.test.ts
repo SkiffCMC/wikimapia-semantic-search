@@ -15,7 +15,7 @@
  * Fixture-only and schema-only checks (AC-39, AC-40, AC-41, AC-50) live in
  * ./wikimapia-client.schema.test.ts and pass before AL2.
  */
-import { createWikimapiaClient } from '../src/wikimapia/client.js';
+import { createWikimapiaClient } from '../src/wikimapia/client';
 import {
   ListPlacesResultSchema,
   PlaceDetailsResultSchema,
@@ -27,7 +27,7 @@ import {
   type PlaceDetails,
   type PlaceDetailsResult,
   type WikimapiaClientOptions,
-} from './wikimapia-client.schema.js';
+} from './wikimapia-client.schema';
 import {
   SYNTHETIC_IPS,
   SimulatedClock,
@@ -43,7 +43,7 @@ import {
   rawDetails,
   settle,
   type SimulatedAnswer,
-} from './wikimapia-client.support.js';
+} from './wikimapia-client.support';
 
 // Compile-time check: the entry point has the contract's signature.
 const create: CreateWikimapiaClientFn = createWikimapiaClient;

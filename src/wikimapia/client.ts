@@ -22,22 +22,19 @@ import {
   type WikimapiaClient,
   type WikimapiaClientOptions,
   type WikimapiaTransport,
-} from '../../contracts/wikimapia-client.schema.js';
-import { executeRequest, type ExecuteDeps } from './execute.js';
-import { interpretBoxAnswer, interpretPlaceDetailsAnswer } from './interpret.js';
-import { describeIssues, toFailureIssues } from './issues.js';
-import { redactFailure } from './redact.js';
-import { buildBoxUrl, buildPlaceDetailsUrl } from './request.js';
-import { createFetchTransport, systemClock } from './runtime.js';
+} from '../../contracts/wikimapia-client.schema';
+import { executeRequest } from './execute';
+import { interpretBoxAnswer, interpretPlaceDetailsAnswer } from './interpret';
+import { describeIssues, toFailureIssues } from './issues';
+import { redactFailure } from './redact';
+import { buildBoxUrl, buildPlaceDetailsUrl } from './request';
+import { createFetchTransport, systemClock } from './runtime';
+import type { Resolved } from './types';
 
-export { createFetchTransport, systemClock } from './runtime.js';
+export { createFetchTransport, systemClock } from './runtime';
 
 const CONFIG_FIELDS = ['apiKey', 'language', 'retryLimit', 'fallbackWaitSeconds'] as const;
 const INTERNAL_ISSUES: readonly FailureIssue[] = [{ path: [], message: 'internal client error' }];
-
-type Resolved =
-  | { ok: true; deps: ExecuteDeps; language: string | undefined }
-  | { ok: false; failure: ClientFailure };
 
 function readOption(options: unknown, key: string): unknown {
   if (typeof options !== 'object' || options === null) return undefined;

@@ -28,3 +28,7 @@
 * **[Zod/AL5 Enforced] No Commenter IPs:** The `user_ip` field of Wikimapia comments is dropped at the API client boundary: the parsed comment type has no such field, it is never stored in the database, and recorded fixtures have it removed. Author `name` is kept, since CC BY attribution requires crediting authors.
 * **No Live External Calls in Tests:** OpenAI and network calls are mocked in every test.
 * **Strict Types Only (AL5 -> AL2):** No implicit `any` or unhandled `unknown` at boundaries. All I/O is typed through `z.infer`.
+
+## 5. Code Style (AL4 Design / AL2 Implementation, all TypeScript incl. `contracts/` and `tests/`)
+* **Extensionless Relative Imports:** Relative imports carry no file extension (`from './client'`, never `'./client.js'` or `'./client.ts'`). `tsconfig.json` uses `"module": "preserve"` + `"moduleResolution": "bundler"`; runnable scripts go through `tsx` or a build step, not plain `node`.
+* **Types in `types.ts`:** Type aliases and interfaces declared in `src/` live in a `types.ts` next to the modules that use them (e.g. `src/wikimapia/types.ts`) and are imported with `import type`. Types inferred from Zod schemas (`z.infer`) stay with their schemas in `contracts/`.

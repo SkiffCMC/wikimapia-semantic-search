@@ -3,7 +3,7 @@
  * from failure text. The key is matched with plain string operations only and is never
  * compiled into a RegExp.
  */
-import type { ClientFailure, FailureIssue } from '../../contracts/wikimapia-client.schema.js';
+import type { ClientFailure, FailureIssue } from '../../contracts/wikimapia-client.schema';
 
 const ADDRESS_REMOVED = '[request address removed]';
 const KEY_REMOVED = '[key removed]';

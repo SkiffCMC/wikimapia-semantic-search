@@ -6,12 +6,12 @@
  * inspects the result. No transport, no clock, no network. The only keys used are the
  * synthetic `TEST_API_KEY` and made-up keys defined below.
  */
-import { redactFailure, redactSecrets } from '../../src/wikimapia/redact.js';
+import { redactFailure, redactSecrets } from '../../src/wikimapia/redact';
 import {
   ClientFailureSchema,
   type ClientFailure,
-} from '../../contracts/wikimapia-client.schema.js';
-import { TEST_API_KEY, at } from '../../contracts/wikimapia-client.support.js';
+} from '../../contracts/wikimapia-client.schema';
+import { TEST_API_KEY, at } from '../../contracts/wikimapia-client.support';
 
 // ---------------------------------------------------------------------------
 // Helpers

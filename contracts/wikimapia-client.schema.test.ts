@@ -24,8 +24,8 @@ import {
   parseRateLimitMessage,
   type Comment,
   type PlaceDetails,
-} from './wikimapia-client.schema.js';
-import { FIXTURE_NAMES, at, fixtureText, rawBox, rawDetails } from './wikimapia-client.support.js';
+} from './wikimapia-client.schema';
+import { FIXTURE_NAMES, at, fixtureText, rawBox, rawDetails } from './wikimapia-client.support';
 
 const BELGRADE = { west: 20.452, south: 44.814, east: 20.462, north: 44.82 };
 

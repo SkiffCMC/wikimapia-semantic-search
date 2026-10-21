@@ -9,17 +9,13 @@
  * for the rejecting case). No network, no real timers, no real keys (`TEST_API_KEY` only).
  */
 import type { z } from 'zod';
-import {
-  executeRequest,
-  type ClientResult,
-  type ExecuteDeps,
-} from '../../src/wikimapia/execute.js';
+import { executeRequest } from '../../src/wikimapia/execute';
 import {
   interpretBoxAnswer,
   interpretPlaceDetailsAnswer,
-  type Interpretation,
-} from '../../src/wikimapia/interpret.js';
-import { buildBoxUrl, buildPlaceDetailsUrl } from '../../src/wikimapia/request.js';
+} from '../../src/wikimapia/interpret';
+import { buildBoxUrl, buildPlaceDetailsUrl } from '../../src/wikimapia/request';
+import type { ClientResult, ExecuteDeps, Interpretation } from '../../src/wikimapia/types';
 import {
   DEFAULT_FALLBACK_WAIT_SECONDS,
   DEFAULT_RETRY_LIMIT,
@@ -34,7 +30,7 @@ import {
   type PlaceDetailsResult,
   type TransportResponse,
   type WikimapiaTransport,
-} from '../../contracts/wikimapia-client.schema.js';
+} from '../../contracts/wikimapia-client.schema';
 import {
   SimulatedClock,
   SimulatedWikimapia,
@@ -47,7 +43,7 @@ import {
   settle,
   type FixtureName,
   type SimulatedAnswer,
-} from '../../contracts/wikimapia-client.support.js';
+} from '../../contracts/wikimapia-client.support';
 
 // ---------------------------------------------------------------------------
 // Fixed test URLs and helpers

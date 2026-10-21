@@ -10,20 +10,20 @@ import {
   describeIssues,
   formatIssuePath,
   toFailureIssues,
-} from '../../src/wikimapia/issues.js';
+} from '../../src/wikimapia/issues';
 import {
   FailureIssueSchema,
   RawBoxResponseSchema,
   RawPlaceDetailsSchema,
   type FailureIssue,
-} from '../../contracts/wikimapia-client.schema.js';
+} from '../../contracts/wikimapia-client.schema';
 import {
   SYNTHETIC_IPS,
   addCommenterIps,
   at,
   rawBox,
   rawDetails,
-} from '../../contracts/wikimapia-client.support.js';
+} from '../../contracts/wikimapia-client.support';
 
 type ZodIssue = z.core.$ZodIssue;
 
