@@ -4,16 +4,45 @@
  */
 import type { z } from 'zod';
 import type { Knex } from 'knex';
-import type { SaveOutcomeKind, StoreFailure } from '../../contracts/storage.schema';
-import type { Comment, PlaceSummary, Point, Tag } from '../../contracts/wikimapia-client.schema';
+import type {
+  SaveOutcomeKind,
+  SavePlaceDetailsInput,
+  SaveReport,
+  StoreFailure,
+  WriteHook,
+} from '../../contracts/storage.schema';
+import type {
+  BoundingBox,
+  Comment,
+  ListingPage,
+  PlaceSummary,
+  Point,
+  Tag,
+} from '../../contracts/wikimapia-client.schema';
+import type {
+  DuePlace,
+  Moment,
+  PlacesDueInput,
+  RunCounts,
+  RunRecordStatus,
+  TileSize,
+} from '../../contracts/hydration.schema';
 import type {
   BigintProbeRowSchema,
   ColumnRowSchema,
   CommentRowSchema,
+  CountRowSchema,
   CountsRowSchema,
+  DuePlaceRowSchema,
+  FinishedPageRowSchema,
+  IdRowSchema,
+  LiveRunRowSchema,
   NameRowSchema,
+  PassRowSchema,
+  PassTileRowSchema,
   PlaceRowSchema,
   RingPointRowSchema,
+  RunRowSchema,
   ShapeRowSchema,
   TagLinkRowSchema,
   TagRowSchema,
@@ -32,6 +61,14 @@ export type CountsRow = z.infer<typeof CountsRowSchema>;
 export type ColumnRow = z.infer<typeof ColumnRowSchema>;
 export type NameRow = z.infer<typeof NameRowSchema>;
 export type BigintProbeRow = z.infer<typeof BigintProbeRowSchema>;
+export type RunRow = z.infer<typeof RunRowSchema>;
+export type PassRow = z.infer<typeof PassRowSchema>;
+export type FinishedPageRow = z.infer<typeof FinishedPageRowSchema>;
+export type PassTileRow = z.infer<typeof PassTileRowSchema>;
+export type DuePlaceRow = z.infer<typeof DuePlaceRowSchema>;
+export type CountRow = z.infer<typeof CountRowSchema>;
+export type IdRow = z.infer<typeof IdRowSchema>;
+export type LiveRunRow = z.infer<typeof LiveRunRowSchema>;
 
 /** jsonb form of an Outline: `[[lon, lat], ...]`. */
 export type OutlinePairs = [number, number][];
@@ -156,4 +193,95 @@ export interface DetailsPlan {
   commentWrites: { kind: 'insert' | 'update'; flat: FlatComment }[];
   /** Nums, ascending. */
   goneComments: number[];
+}
+
+/** State of a Region's current Listing Pass (AL4 hydration 1.4.6 "PassState query"). */
+export interface PassState {
+  passNumber: number;
+  tileCount: number;
+  /** Tile Numbers with a Short Page, ascending. */
+  finishedTiles: number[];
+  /** `[tileNumber, last finished page]` for every Tile with a Finished Page, ascending. */
+  lastFinishedPage: [number, number][];
+}
+
+/** The newest pass of a Region: its row and derived state (`readCurrentPass`). */
+export interface CurrentPass {
+  row: PassRow;
+  state: PassState;
+}
+
+/** R1 query input plus an optional row limit (AL4 hydration 1.3, 1.4.7). */
+export interface DueQuery extends PlacesDueInput {
+  limit?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Crawl repository (AL4 hydration 1.3, 1.4.5 .. 1.4.9)
+// ---------------------------------------------------------------------------
+
+/** Run start input (`beginRunStep`). */
+export interface BeginRunInput {
+  regionName: string;
+  bbox: BoundingBox;
+  tileSize: TileSize;
+  tileCount: number;
+  relist: boolean;
+  startedAt: Moment;
+  abandonBefore: Moment;
+  counts: RunCounts;
+}
+
+/**
+ * Result of a Run start. A `started` value without `pass` means the current pass is complete and
+ * there is no Listing Phase (the key is omitted, never set to `undefined`).
+ */
+export type BeginRunValue =
+  | { kind: 'started'; runId: number; pass?: PassState; abandonedRunIds: number[] }
+  | { kind: 'run_in_progress'; runId: number; lastActivity: Moment }
+  | { kind: 'region_changed'; passNumber: number };
+
+export interface RenewInput {
+  runId: number;
+  at: Moment;
+  counts: RunCounts;
+}
+
+export interface ListingStepInput {
+  runId: number;
+  regionName: string;
+  passNumber: number;
+  tileNumber: number;
+  page: number;
+  listing: ListingPage;
+  short: boolean;
+  finishedAt: Moment;
+}
+
+export type ListingStepValue = { kind: 'saved'; report: SaveReport } | { kind: 'taken_over' };
+
+export type FinalRunStatus = Exclude<RunRecordStatus, 'in_progress' | 'abandoned'>;
+
+export interface FinishInput {
+  runId: number;
+  status: FinalRunStatus;
+  endedAt: Moment;
+  counts: RunCounts;
+}
+
+export interface CrawlRepositoryOptions {
+  connectionString: string;
+  onWrite?: WriteHook;
+}
+
+/** The Run's database handle (`crawl-repository.ts`). Every method resolves, never rejects. */
+export interface CrawlRepository {
+  beginRun(input: BeginRunInput): Promise<StoreResult<BeginRunValue>>;
+  renewActivity(input: RenewInput): Promise<StoreResult<{ alive: boolean }>>;
+  recordListingPage(input: ListingStepInput): Promise<StoreResult<ListingStepValue>>;
+  saveDetails(input: SavePlaceDetailsInput): Promise<StoreResult<SaveReport>>;
+  listPlacesDue(query: DueQuery): Promise<StoreResult<DuePlace[]>>;
+  countPlacesDue(input: PlacesDueInput): Promise<StoreResult<number>>;
+  finishRun(input: FinishInput): Promise<StoreResult<{ updated: boolean }>>;
+  close(): Promise<void>;
 }

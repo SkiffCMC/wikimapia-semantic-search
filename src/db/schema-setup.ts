@@ -16,7 +16,8 @@ import type {
 } from '../../contracts/storage.schema';
 import { POOL_MAX_SETUP, createDb, destroyQuietly } from './connection';
 import { storeUnavailable, unavailableFrom } from './failures';
-import { currentDatabaseName, readStructure } from './inspect';
+import { CRAWL_TABLES } from './crawl-tables';
+import { currentDatabaseName, readAppliedSteps, readStructure } from './inspect';
 import { MIGRATIONS, MIGRATION_TABLE, migrationSource } from './migrations';
 
 const NOT_CONFIGURED_MESSAGE =
@@ -24,8 +25,18 @@ const NOT_CONFIGURED_MESSAGE =
 const NOT_A_TEST_DATABASE_MESSAGE =
   'Refusing to empty a database whose name does not end in "_test"';
 
-/** `migrate.latest` / `migrate.rollback` resolve `[batchNo, log]`. */
+/** `migrate.latest` / `migrate.rollback` / `migrate.down` resolve `[batchNo, log]`. */
 const MigrateResultSchema = z.tuple([z.unknown(), z.array(z.string())]);
+
+/** Result of the `to_regclass` existence probe. */
+const TableExistsResultSchema = z.object({
+  rows: z.tuple([z.object({ present: z.boolean() })]),
+});
+
+const TRUNCATE_STORE_TABLES = 'TRUNCATE TABLE place_tags, comments, tags, places';
+const TRUNCATE_CRAWL_TABLES =
+  'TRUNCATE TABLE crawl_finished_pages, crawl_passes, crawl_runs RESTART IDENTITY';
+const TABLE_EXISTS = 'select to_regclass(?) is not null as present';
 
 const MIGRATION_CONFIG: Knex.MigratorConfig = {
   migrationSource,
@@ -53,6 +64,7 @@ function notConfiguredSetup(): SchemaSetup {
   return {
     apply: () => Promise.resolve(failure()),
     undoAll: () => Promise.resolve(failure()),
+    undoLast: () => Promise.resolve(failure()),
     inspect: () => Promise.resolve(failure()),
     emptyStore: () => Promise.resolve(failure()),
     close: () => Promise.resolve(),
@@ -80,6 +92,18 @@ function configuredSetup(db: Knex): SchemaSetup {
     }
   }
 
+  async function undoLast(): Promise<SchemaStepsResult> {
+    try {
+      const applied = await readAppliedSteps(db);
+      if (applied.length === 0) return { ok: true, value: { steps: [] } };
+      const result: unknown = await db.migrate.down(MIGRATION_CONFIG);
+      const [, steps] = MigrateResultSchema.parse(result);
+      return { ok: true, value: { steps } };
+    } catch (error) {
+      return { ok: false, failure: unavailableFrom(error, 'schema setup undo last') };
+    }
+  }
+
   async function inspect(): Promise<StoreStructureResult> {
     try {
       return { ok: true, value: await readStructure(db, STEP_NAMES) };
@@ -94,7 +118,12 @@ function configuredSetup(db: Knex): SchemaSetup {
       if (!isTestDatabaseName(name)) {
         return { ok: false, failure: storeUnavailable(NOT_A_TEST_DATABASE_MESSAGE) };
       }
-      await db.raw('TRUNCATE TABLE place_tags, comments, tags, places');
+      await db.transaction(async (trx) => {
+        await trx.raw(TRUNCATE_STORE_TABLES);
+        const result: unknown = await trx.raw(TABLE_EXISTS, [CRAWL_TABLES.runs]);
+        const [{ present }] = TableExistsResultSchema.parse(result).rows;
+        if (present) await trx.raw(TRUNCATE_CRAWL_TABLES);
+      });
       return { ok: true, value: {} };
     } catch (error) {
       return { ok: false, failure: unavailableFrom(error, 'empty store') };
@@ -104,6 +133,7 @@ function configuredSetup(db: Knex): SchemaSetup {
   return {
     apply,
     undoAll,
+    undoLast,
     inspect,
     emptyStore,
     close: () => destroyQuietly(db),

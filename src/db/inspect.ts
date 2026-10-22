@@ -27,7 +27,7 @@ export async function currentDatabaseName(db: Knex): Promise<string> {
   return name;
 }
 
-async function readAppliedSteps(db: Knex): Promise<string[]> {
+export async function readAppliedSteps(db: Knex): Promise<string[]> {
   const exists = await selectNames(
     db,
     `select table_name::text as name
