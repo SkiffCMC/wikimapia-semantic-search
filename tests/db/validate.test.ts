@@ -5,11 +5,15 @@
  * or small synthetic mutations of it. Every invalid case must give `ok: false`, a failure that
  * passes `InvalidDataFailureSchema`, and an issue whose path equals the expected one exactly
  * (AC-15, AC-38, AC-39, AC-51, AC-53 .. AC-55).
+ * Extended by feature `hydration` (AL3 routing 20261022-hydration-03-store-read, 2.1 C):
+ * `validatePlacesDueInput` and `validateCrawlProgressInput` (section 8).
  */
 import {
+  validateCrawlProgressInput,
   validateDetailsInput,
   validateListingInput,
   validatePlaceRef,
+  validatePlacesDueInput,
   validateTagRef,
 } from '../../src/db/validate';
 import {
@@ -35,6 +39,7 @@ import {
   type NestedParts,
 } from '../../contracts/storage.support';
 import { SYNTHETIC_IPS } from '../../contracts/wikimapia-client.support';
+import { RUN_START, SMALL_BBOX } from '../../contracts/hydration.support';
 
 type AnyResult = { ok: true; value: unknown } | { ok: false; failure: StoreFailure };
 type Path = (string | number)[];
@@ -402,5 +407,193 @@ describe('validateTagRef', () => {
 
   it('tagId 0 is ok', () => {
     expect(validateTagRef({ tagId: 0 })).toStrictEqual({ ok: true, value: { tagId: 0 } });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. validatePlacesDueInput / validateCrawlProgressInput (feature `hydration`; AL4 hydration
+//    1.3, 1.4.11; AL3 routing 20261022-hydration-03-store-read, section 2.1 C)
+// ---------------------------------------------------------------------------
+
+describe('validatePlacesDueInput', () => {
+  it('a valid input is ok with a value equal to the input', () => {
+    const input = { bbox: { ...SMALL_BBOX }, dueBefore: RUN_START };
+    expect(validatePlacesDueInput(input)).toStrictEqual({
+      ok: true,
+      value: { bbox: SMALL_BBOX, dueBefore: RUN_START },
+    });
+  });
+
+  it('the value is a fresh object: mutating it leaves the input unchanged', () => {
+    const input = { bbox: { ...SMALL_BBOX }, dueBefore: RUN_START };
+    const result = validatePlacesDueInput(input);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.value).not.toBe(input);
+    result.value.dueBefore = '2000-01-01T00:00:00Z';
+    result.value.bbox.west = 0;
+    expect(input).toStrictEqual({ bbox: SMALL_BBOX, dueBefore: RUN_START });
+  });
+
+  it("dueBefore 'yesterday' names dueBefore and does not echo the value", () => {
+    const failure = invalidOf(validatePlacesDueInput({ bbox: SMALL_BBOX, dueBefore: 'yesterday' }));
+    issueAt(failure, ['dueBefore']);
+    expect(failure.message).not.toContain('yesterday');
+    expect(JSON.stringify(failure)).not.toContain('yesterday');
+  });
+
+  it('dueBefore with milliseconds names dueBefore', () => {
+    const failure = invalidOf(
+      validatePlacesDueInput({ bbox: SMALL_BBOX, dueBefore: '2026-10-22T09:00:00.000Z' }),
+    );
+    issueAt(failure, ['dueBefore']);
+  });
+
+  it('a reversed bbox is reported at a path under bbox', () => {
+    const reversed = { ...SMALL_BBOX, west: SMALL_BBOX.east, east: SMALL_BBOX.west };
+    const failure = invalidOf(validatePlacesDueInput({ bbox: reversed, dueBefore: RUN_START }));
+    const underBbox = failure.issues.filter((i) => i.path[0] === 'bbox' && i.path.length >= 2);
+    expect(underBbox.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('a missing bbox names bbox', () => {
+    issueAt(invalidOf(validatePlacesDueInput({ dueBefore: RUN_START })), ['bbox']);
+  });
+
+  it('a missing dueBefore names dueBefore', () => {
+    issueAt(invalidOf(validatePlacesDueInput({ bbox: SMALL_BBOX })), ['dueBefore']);
+  });
+
+  it('an extra key is invalid_data', () => {
+    invalidOf(validatePlacesDueInput({ bbox: SMALL_BBOX, dueBefore: RUN_START, limit: 3 }));
+  });
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['a number', 42],
+    ['an array', [SMALL_BBOX, RUN_START]],
+  ])('%s is invalid_data and does not throw', (_label, input) => {
+    let result: AnyResult | undefined;
+    expect(() => {
+      result = validatePlacesDueInput(input);
+    }).not.toThrow();
+    if (result === undefined) throw new Error('no result');
+    invalidOf(result);
+  });
+});
+
+describe('validateCrawlProgressInput', () => {
+  it("{ regionName: 'test-one' } is ok", () => {
+    expect(validateCrawlProgressInput({ regionName: 'test-one' })).toStrictEqual({
+      ok: true,
+      value: { regionName: 'test-one' },
+    });
+  });
+
+  it('the value is a fresh object', () => {
+    const input = { regionName: 'test-one' };
+    const result = validateCrawlProgressInput(input);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.value).not.toBe(input);
+  });
+
+  it.each(['Belgrade', '', '-a', 'a--b', 'a b', 'a-'])(
+    'regionName %j names regionName',
+    (regionName) => {
+      issueAt(invalidOf(validateCrawlProgressInput({ regionName })), ['regionName']);
+    },
+  );
+
+  it('a number names regionName', () => {
+    issueAt(invalidOf(validateCrawlProgressInput({ regionName: 7 })), ['regionName']);
+  });
+
+  it('a missing key names regionName', () => {
+    issueAt(invalidOf(validateCrawlProgressInput({})), ['regionName']);
+  });
+
+  it('an extra key is invalid_data', () => {
+    invalidOf(validateCrawlProgressInput({ regionName: 'test-one', extra: true }));
+  });
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['a string', 'test-one'],
+  ])('%s is invalid_data and does not throw', (_label, input) => {
+    let result: AnyResult | undefined;
+    expect(() => {
+      result = validateCrawlProgressInput(input);
+    }).not.toThrow();
+    if (result === undefined) throw new Error('no result');
+    invalidOf(result);
+  });
+});
+
+describe('crawl input validators robustness', () => {
+  function throwingGetter(key: string, rest: Record<string, string>): object {
+    const input = { ...rest };
+    Object.defineProperty(input, key, {
+      enumerable: true,
+      get() {
+        throw new Error('getter blew up');
+      },
+    });
+    return input;
+  }
+
+  function hostileProxy(): object {
+    return new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('proxy blew up');
+        },
+        has() {
+          throw new Error('proxy blew up');
+        },
+        ownKeys() {
+          throw new Error('proxy blew up');
+        },
+        getOwnPropertyDescriptor() {
+          throw new Error('proxy blew up');
+        },
+        getPrototypeOf() {
+          throw new Error('proxy blew up');
+        },
+      },
+    );
+  }
+
+  const cases: [string, (input: unknown) => AnyResult, () => unknown][] = [
+    [
+      'validatePlacesDueInput, throwing bbox getter',
+      validatePlacesDueInput,
+      () => throwingGetter('bbox', { dueBefore: RUN_START }),
+    ],
+    [
+      'validatePlacesDueInput, throwing dueBefore getter',
+      validatePlacesDueInput,
+      () => throwingGetter('dueBefore', {}),
+    ],
+    ['validatePlacesDueInput, hostile Proxy', validatePlacesDueInput, hostileProxy],
+    [
+      'validateCrawlProgressInput, throwing regionName getter',
+      validateCrawlProgressInput,
+      () => throwingGetter('regionName', {}),
+    ],
+    ['validateCrawlProgressInput, hostile Proxy', validateCrawlProgressInput, hostileProxy],
+  ];
+
+  it.each(cases)('%s: invalid_data, never throws, no error text', (_label, validate, build) => {
+    const input = build();
+    let result: AnyResult | undefined;
+    expect(() => {
+      result = validate(input);
+    }).not.toThrow();
+    if (result === undefined) throw new Error('no result');
+    const failure = invalidOf(result);
+    expect(failure.issues.length).toBeGreaterThanOrEqual(1);
+    expect(JSON.stringify(failure)).not.toContain('blew up');
   });
 });
