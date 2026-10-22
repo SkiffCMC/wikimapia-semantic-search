@@ -12,8 +12,8 @@ import {
   DEFAULT_RETRY_LIMIT,
   ListPlacesInputSchema,
   PlaceDetailsInputSchema,
+  type ClientConfig,
   type ClientFailure,
-  type Clock,
   type FailureIssue,
   type ListPlacesInput,
   type ListPlacesResult,
@@ -21,7 +21,6 @@ import {
   type PlaceDetailsResult,
   type WikimapiaClient,
   type WikimapiaClientOptions,
-  type WikimapiaTransport,
 } from '../../contracts/wikimapia-client.schema';
 import { executeRequest } from './execute';
 import { interpretBoxAnswer, interpretPlaceDetailsAnswer } from './interpret';
@@ -29,29 +28,30 @@ import { describeIssues, toFailureIssues } from './issues';
 import { redactFailure } from './redact';
 import { buildBoxUrl, buildPlaceDetailsUrl } from './request';
 import { createFetchTransport, systemClock } from './runtime';
-import type { Resolved } from './types';
+import type { Resolved, UncheckedOptions } from './types';
 
 export { createFetchTransport, systemClock } from './runtime';
 
-const CONFIG_FIELDS = ['apiKey', 'language', 'retryLimit', 'fallbackWaitSeconds'] as const;
 const INTERNAL_ISSUES: readonly FailureIssue[] = [{ path: [], message: 'internal client error' }];
 
-function readOption(options: unknown, key: string): unknown {
-  if (typeof options !== 'object' || options === null) return undefined;
-  return (options as Record<string, unknown>)[key];
+function configCandidate(source: UncheckedOptions): Partial<ClientConfig> {
+  if (source === null || source === undefined) return {};
+  return {
+    ...(source.apiKey === undefined ? {} : { apiKey: source.apiKey }),
+    ...(source.language === undefined ? {} : { language: source.language }),
+    ...(source.retryLimit === undefined ? {} : { retryLimit: source.retryLimit }),
+    ...(source.fallbackWaitSeconds === undefined
+      ? {}
+      : { fallbackWaitSeconds: source.fallbackWaitSeconds }),
+  };
 }
 
-function resolveConfig(options: unknown): Resolved {
-  const data: Record<string, unknown> = {};
-  for (const field of CONFIG_FIELDS) {
-    const value = readOption(options, field);
-    if (value !== undefined) data[field] = value;
-  }
+function resolveConfig(options: WikimapiaClientOptions): Resolved {
+  const candidate: Partial<ClientConfig> = configCandidate(options);
 
-  const parsed = ClientConfigSchema.safeParse(data);
+  const parsed = ClientConfigSchema.safeParse(candidate);
   if (!parsed.success) {
-    const rawKey = data['apiKey'];
-    const trimmedKey = typeof rawKey === 'string' ? rawKey.trim() : '';
+    const trimmedKey = typeof candidate.apiKey === 'string' ? candidate.apiKey.trim() : '';
     const failure: ClientFailure = {
       kind: 'configuration',
       message: describeIssues(
@@ -63,8 +63,7 @@ function resolveConfig(options: unknown): Resolved {
   }
 
   const config = parsed.data;
-  const transport = readOption(options, 'transport') as WikimapiaTransport | undefined;
-  const clock = readOption(options, 'clock') as Clock | undefined;
+  const { transport, clock } = options;
   return {
     ok: true,
     language: config.language,

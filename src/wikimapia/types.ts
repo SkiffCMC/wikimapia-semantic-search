@@ -7,6 +7,8 @@ import type {
   ClientFailure,
   Clock,
   FailureIssue,
+  TransportResponse,
+  WikimapiaClientOptions,
   WikimapiaTransport,
 } from '../../contracts/wikimapia-client.schema';
 
@@ -29,9 +31,15 @@ export interface ExecuteDeps {
 }
 
 /** Used by `execute.ts` only. */
-export type TransportOutcome = { ok: true; response: unknown } | { ok: false; error: unknown };
+export type TransportOutcome = { ok: true; response: TransportResponse } | { ok: false; error: unknown };
 
 /** Used by `client.ts` only. */
 export type Resolved =
   | { ok: true; deps: ExecuteDeps; language: string | undefined }
   | { ok: false; failure: ClientFailure };
+
+/**
+ * Used by `client.ts` only (unit 07). The contract-typed options as the factory must tolerate
+ * them at runtime (1.4.1): casts may leave out fields (AC-31 `{}`) or pass `null` / `undefined`.
+ */
+export type UncheckedOptions = Partial<WikimapiaClientOptions> | null | undefined;
