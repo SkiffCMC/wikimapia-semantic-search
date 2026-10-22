@@ -382,16 +382,17 @@ describe('AC-4 Setup undone', () => {
   });
 });
 
-describe('AC-5 No embeddings, no crawl progress yet', () => {
-  it('has no vector or embedding column and no crawl-progress table; Vector Support is enabled', async () => {
+// Narrowed by feature `hydration` (AL6 20261022-hydration-al6.md AC-55, R2, gap G3, approved by
+// the stakeholder): Crawl Progress storage is now allowed; embeddings and vectors still are not.
+describe('AC-5 No embeddings or vectors of any kind', () => {
+  it('has no vector or embedding table or column; Vector Support is enabled', async () => {
     const structure = await inspect();
     expect(structure.enabledExtensions).toContain('vector');
     for (const table of structure.tables) {
-      expect(table.name).not.toMatch(/crawl|progress|visit|checkpoint|cursor|queue|job|embedding/i);
+      expect(table.name).not.toMatch(/embedding|vector/i);
       for (const column of table.columns) {
         expect(column.udtName).not.toBe('vector');
         expect(column.name).not.toMatch(/embedding|vector/i);
-        expect(column.name).not.toMatch(/visited|crawled|progress|cursor/i);
       }
     }
   });
