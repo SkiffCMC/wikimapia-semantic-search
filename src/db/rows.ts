@@ -6,6 +6,7 @@
  * parser (`connection.ts`).
  */
 import { z } from 'zod';
+import { RunCountsSchema, RunRecordStatusSchema } from '../../contracts/hydration.schema';
 import { PresenceSchema } from '../../contracts/storage.schema';
 
 const BigintSchema = z.number().int();
@@ -114,4 +115,72 @@ export const NameRowSchema = z.object({
 /** Result row of `selectBigint`. */
 export const BigintProbeRowSchema = z.object({
   value: z.number(),
+});
+
+// ---------------------------------------------------------------------------
+// Crawl Progress and Places Due rows (AL4 hydration 1.1 `rows.ts`, 1.4.6, 1.4.7, 1.4.11, 2.2 .. 2.4)
+// ---------------------------------------------------------------------------
+
+/** `crawl_runs`, moments formatted with `to_char` (`*_text`); `counts` arrives parsed (jsonb). */
+export const RunRowSchema = z.object({
+  run_id: BigintSchema,
+  region_name: z.string(),
+  status: RunRecordStatusSchema,
+  started_at_text: z.string(),
+  ended_at_text: z.string().nullable(),
+  last_activity_text: z.string(),
+  counts: RunCountsSchema,
+});
+
+/** `crawl_passes`, the Tile Plan inputs of one Listing Pass. */
+export const PassRowSchema = z.object({
+  region_name: z.string(),
+  pass_number: z.number().int(),
+  bbox_west: z.number(),
+  bbox_south: z.number(),
+  bbox_east: z.number(),
+  bbox_north: z.number(),
+  tile_width: z.number(),
+  tile_height: z.number(),
+  tile_count: z.number().int(),
+});
+
+/** `crawl_finished_pages`. */
+export const FinishedPageRowSchema = z.object({
+  pass_number: z.number().int(),
+  tile_number: z.number().int(),
+  page_no: z.number().int(),
+  run_id: BigintSchema,
+  place_count: z.number().int(),
+  is_short: z.boolean(),
+  reported_total: BigintSchema.nullable(),
+});
+
+/** PassState aggregate: one row per Tile with a Finished Page. */
+export const PassTileRowSchema = z.object({
+  tile_number: z.number().int(),
+  last_page: z.number().int(),
+  finished: z.boolean(),
+});
+
+/** One Place Due for Details (R1 query). */
+export const DuePlaceRowSchema = z.object({
+  place_id: BigintSchema,
+  details_fetched_at_text: z.string().nullable(),
+});
+
+/** `count(*)`. */
+export const CountRowSchema = z.object({
+  count: BigintSchema,
+});
+
+/** `nextval(...) as id`. */
+export const IdRowSchema = z.object({
+  id: BigintSchema,
+});
+
+/** Live Run row of a Region during Run start (`last_activity` formatted with `to_char`). */
+export const LiveRunRowSchema = z.object({
+  run_id: BigintSchema,
+  last_activity_text: z.string(),
 });

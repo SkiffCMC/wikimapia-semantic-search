@@ -1,0 +1,9 @@
+Stage 1, substep 3 from CLAUDE.md: Hydration jobs. Crawl a region through the substep 1 client (createWikimapiaClient: listPlaces via `box`, getPlaceDetails via `place.getbyid`) and save into the substep 2 store (createPlaceStore: saveListingPage, savePlaceDetails).
+- Two phases. Listing: split the region's bbox into a grid of tiles and page each tile with listPlaces until a page comes back short or empty, saving every page. Details: fetch getPlaceDetails for places that have no details yet, or whose details are older than a configurable refresh age, and save them.
+- Resumable: crawl progress (tiles and pages done, per run) is stored in the database through a new migration. Restarting after a crash or Ctrl+C continues where it stopped and never repeats finished pages. Re-running a finished crawl only does the refresh work.
+- Rate limits: the client already waits on Wikimapia's debug rate-limit response. The job adds a configurable minimum interval between requests. When the client reports rate-limit exhaustion, the job stops cleanly with its progress saved instead of failing.
+- Limits for safe runs: configurable maximum number of requests per run, and a dry-run mode that only plans the tiles.
+- Each run ends with a summary: requests made, rate-limit waits and their total seconds, places listed, details saved, failures. These numbers are how we will measure the real API quota.
+- Runnable from the CLI via tsx (e.g. `pnpm crawl --region belgrade`), with regions defined in config (start with a small central Belgrade bbox). Scheduling is done by OS cron or Task Scheduler calling that command. No in-process scheduler.
+- Places that disappear from listings are not deleted in this substep.
+Tests use the recorded fixtures through an injected transport and the test DB. No live Wikimapia calls in tests.

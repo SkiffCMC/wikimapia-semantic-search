@@ -569,11 +569,19 @@ export interface SchemaSetup {
   apply(): Promise<SchemaStepsResult>;
   /** Undoes every applied step, newest first; reports the steps undone (AC-4). */
   undoAll(): Promise<SchemaStepsResult>;
+  /**
+   * Undoes only the newest applied step and reports it (empty if none is applied). Added by
+   * feature `hydration` (AC-56): undoing the Crawl Progress step leaves every Place, Comment,
+   * Tag and Place-Tag Link unchanged.
+   */
+  undoLast(): Promise<SchemaStepsResult>;
   /** Describes steps, extensions and tables of the connected database. */
   inspect(): Promise<StoreStructureResult>;
   /**
-   * Removes every Place, Comment, Tag and Place-Tag Link, keeping the structure (AC-61).
-   * Refuses with `store_unavailable` unless the database name ends in `_test`.
+   * Removes every Place, Comment, Tag and Place-Tag Link, keeping the structure (AC-61), and,
+   * once the `hydration` Schema Setup step exists, all Crawl Progress and Run Records too
+   * (hydration AC-57, gap G3). Refuses with `store_unavailable` unless the database name ends
+   * in `_test`.
    */
   emptyStore(): Promise<EmptyResult>;
   /** Releases the connection. Never rejects. */

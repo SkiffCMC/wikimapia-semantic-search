@@ -18,6 +18,12 @@ import {
   type TagRefInput,
 } from '../../contracts/storage.schema';
 import { PlaceDetailsSchema } from '../../contracts/wikimapia-client.schema';
+import {
+  CrawlProgressInputSchema,
+  PlacesDueInputSchema,
+  type CrawlProgressInput,
+  type PlacesDueInput,
+} from '../../contracts/hydration.schema';
 import { toFailureIssues } from '../wikimapia/issues';
 import { invalidData } from './failures';
 import type { Validated } from './types';
@@ -85,4 +91,16 @@ export function validatePlaceRef(input: unknown): Validated<PlaceRefInput> {
 
 export function validateTagRef(input: unknown): Validated<TagRefInput> {
   return plain(TagRefInputSchema, input, 'input does not have the shape of a tag reference');
+}
+
+export function validatePlacesDueInput(input: unknown): Validated<PlacesDueInput> {
+  return plain(PlacesDueInputSchema, input, 'input does not have the shape of a Places Due query');
+}
+
+export function validateCrawlProgressInput(input: unknown): Validated<CrawlProgressInput> {
+  return plain(
+    CrawlProgressInputSchema,
+    input,
+    'input does not have the shape of a Crawl Progress query',
+  );
 }

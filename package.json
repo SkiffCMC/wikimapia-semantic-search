@@ -13,9 +13,10 @@
     "db:up": "docker compose up -d --build --wait",
     "db:down": "docker compose down",
     "db:reset": "docker compose down -v && docker compose up -d --build --wait",
-    "test:db": "vitest run --no-color contracts/storage.test.ts tests/db",
+    "test:db": "vitest run --no-color contracts/storage.test.ts contracts/hydration.test.ts tests/db tests/crawl",
     "db:migrate": "tsx scripts/db-migrate.ts",
-    "db:status": "tsx scripts/db-status.ts"
+    "db:status": "tsx scripts/db-status.ts",
+    "crawl": "tsx scripts/crawl.ts"
   },
   "dependencies": {
     "knex": "^3.3.0",
