@@ -3,3 +3,6 @@ node_modules/
 .add/reports/
 data/
 *.dump
+.env.*
+!.env.example
+!.env.test.example

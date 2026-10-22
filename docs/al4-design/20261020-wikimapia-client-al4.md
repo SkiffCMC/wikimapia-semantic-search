@@ -3,7 +3,7 @@
 - **Feature:** `wikimapia-client` (Stage 1, substep 1)
 - **AL6 source:** `docs/al6-requirements/20261020-wikimapia-client-al6.md` (AC-1 .. AC-50)
 - **AL5 sources:** `contracts/wikimapia-client.schema.ts` (types, schemas, `ENTRY_POINT`), `contracts/wikimapia-client.test.ts` (behavioural tests), `contracts/wikimapia-client.schema.test.ts` (schema/fixture tests), `contracts/wikimapia-client.support.ts` (Simulated Wikimapia, Simulated Clock, fixture loaders), `contracts/fixtures/wikimapia/`
-- **Binding rules:** `.agrules` sections 1 (Offline Ingestion), 2 (Zod-validated boundaries), 4 (Licensing, No Commenter IPs, Recorded API Fixtures, No Live External Calls in Tests, Strict Types), 5 (Code Style: extensionless relative imports, types in `types.ts`)
+- **Binding rules:** `.agrules` sections 1 (Offline Ingestion), 2 (Zod-validated boundaries), 4 (Licensing, No Commenter IPs, Recorded API Fixtures, No Live External Calls in Tests, Strict Types), 5 (Code Style: extensionless relative imports, `unknown` only for truly unknown values, types in `types.ts`)
 - **Status:** Ready for AL3 Routing
 
 ## 0. Scope and Fixed Points
@@ -24,6 +24,7 @@ Fixed by AL5, not to be changed by AL3/AL2:
 **Code style (`.agrules` section 5).**
 
 - **Extensionless relative imports.** `tsconfig.json` uses `"module": "preserve"` + `"moduleResolution": "bundler"`. Relative imports carry no extension: `from './issues'`, `from '../../contracts/wikimapia-client.schema'`, never `'./issues.js'` or `'./issues.ts'`. Runnable scripts go through `tsx` or a build step, not plain `node`.
+- **`unknown` only for truly unknown values.** `unknown` is allowed only for caught errors and their `cause`, `JSON.parse` output, and the parameter of a validator that checks untrusted input. Everything else uses the narrowest type available: contract `z.infer` types, contract interfaces, or a dedicated type in `types.ts`. Contract-typed parameters (e.g. `WikimapiaClientOptions`) are never widened to `unknown`, and `Record<string, unknown>` never stands in for a known shape. The 2026-10-22 inventory and its corrective unit 07 are in section 4.
 - **Types in `types.ts`.** Every type alias and interface declared in `src/wikimapia/` lives in `src/wikimapia/types.ts` (section 1.3) and is imported with `import type { ... } from './types'`. The other `src/wikimapia/*` modules declare and export no types. Types inferred from Zod schemas (`z.infer`) stay in `contracts/wikimapia-client.schema.ts` and are imported from there, not re-exported through `types.ts`.
 
 **HTTP framework:** not needed here, because this feature is a client and not a server. The open decision in `CLAUDE.md` stays open.
@@ -38,7 +39,7 @@ Files lower in the table depend only on files above them. `types.ts` was added b
 
 | File | Kind | Responsibility | Exports (internal unless marked public) |
 |---|---|---|---|
-| `src/wikimapia/types.ts` | types only | Holds every type alias and interface declared in `src/wikimapia/`. It has no runtime code and imports only `import type` from the schema file. | type `Normalized<T>`, type `Interpretation<T>`, type `ClientResult<T>`, interface `ExecuteDeps`, type `TransportOutcome` (used by `execute.ts` only), type `Resolved` (used by `client.ts` only) |
+| `src/wikimapia/types.ts` | types only | Holds every type alias and interface declared in `src/wikimapia/`. It has no runtime code and imports only `import type` from the schema file. | type `Normalized<T>`, type `Interpretation<T>`, type `ClientResult<T>`, interface `ExecuteDeps`, type `TransportOutcome` (used by `execute.ts` only), types `Resolved` and `UncheckedOptions` (used by `client.ts` only; `UncheckedOptions` added by unit 07, section 4) |
 | `src/wikimapia/issues.ts` | pure | Turns Zod issues into contract `FailureIssue`s and formats paths for messages. | `toFailureIssues`, `formatIssuePath`, `describeIssues`, `MAX_REPORTED_ISSUES` |
 | `src/wikimapia/normalize.ts` | pure | Maps validated raw wire objects to strict output objects. Runs the semantic checks that Zod wire schemas cannot express. Gates the result with the contract output schemas. | `normalizeListingPage`, `normalizePlaceDetails`, `normalizeComment` |
 | `src/wikimapia/interpret.ts` | pure | Classifies one HTTP body: data, rate limit, Wikimapia error or unexpected response. | `interpretAnswer`, `interpretBoxAnswer`, `interpretPlaceDetailsAnswer` |
@@ -77,7 +78,9 @@ listPlaces(input) / getPlaceDetails(input)
 
 ```ts
 // types.ts  (types only; no runtime code)
-import type { ClientFailure, Clock, FailureIssue, WikimapiaTransport } from '../../contracts/wikimapia-client.schema';
+import type {
+  ClientFailure, Clock, FailureIssue, TransportResponse, WikimapiaClientOptions, WikimapiaTransport,
+} from '../../contracts/wikimapia-client.schema';
 export type Normalized<T> = { ok: true; value: T } | { ok: false; issues: FailureIssue[] };
 export type Interpretation<T> =
   | { kind: 'data'; value: T }
@@ -89,10 +92,15 @@ export interface ExecuteDeps {
   transport: WikimapiaTransport; clock: Clock; apiKey: string;
   retryLimit: number; fallbackWaitSeconds: number;
 }
-export type TransportOutcome = { ok: true; response: unknown } | { ok: false; error: unknown };   // execute.ts only
+export type TransportOutcome =                                                                      // execute.ts only
+  | { ok: true; response: TransportResponse }   // the transport's declared return type (unit 07); still re-checked with TransportResponseSchema
+  | { ok: false; error: unknown };              // caught error: `unknown` is correct (.agrules section 5)
 export type Resolved =                                                                              // client.ts only
   | { ok: true; deps: ExecuteDeps; language: string | undefined }
   | { ok: false; failure: ClientFailure };
+/** client.ts only (unit 07). The contract-typed options as the factory must tolerate them at
+ *  runtime (1.4.1): casts may leave out fields (AC-31 `{}`) or pass `null` / `undefined`. */
+export type UncheckedOptions = Partial<WikimapiaClientOptions> | null | undefined;
 
 // issues.ts
 export const MAX_REPORTED_ISSUES = 20;
@@ -131,18 +139,22 @@ export const MAX_TIMER_DELAY_MS = 2_147_483_647;
 export function createFetchTransport(options?: { timeoutMs?: number }): WikimapiaTransport;
 export const systemClock: Clock;
 
-// client.ts      (import type { Resolved } from './types'; ExecuteDeps is used here only inside Resolved, so importing it too fails lint as unused)
+// client.ts      (import type { Resolved, UncheckedOptions } from './types'; ExecuteDeps is used here only inside Resolved, so importing it too fails lint as unused)
 export const createWikimapiaClient: CreateWikimapiaClientFn;
+// private (unit 07): no `unknown`, no `Record<string, unknown>`, no `as` casts
+function configCandidate(source: UncheckedOptions): Partial<ClientConfig>;   // copies the four data fields, leaves out undefined ones
+function resolveConfig(options: WikimapiaClientOptions): Resolved;
 export { createFetchTransport, systemClock } from './runtime';
 ```
 
-`TransportOutcome` and `Resolved` are exported from `types.ts` only so that their single consumer can import them. They are not part of any other module's surface, and tests should not depend on them. `ClientResult<ListingPage>` and `ClientResult<PlaceDetails>` must be assignable to the contract's `ListPlacesResult` and `PlaceDetailsResult`. If they are not, use the contract types directly.
+`TransportOutcome`, `Resolved` and `UncheckedOptions` are exported from `types.ts` only so that their single consumer can import them. They are not part of any other module's surface, and tests should not depend on them. `ClientResult<ListingPage>` and `ClientResult<PlaceDetails>` must be assignable to the contract's `ListPlacesResult` and `PlaceDetailsResult`. If they are not, use the contract types directly.
 
 ### 1.4 Detailed behaviour per subsystem
 
 #### 1.4.1 Configuration (`client.ts`, AC-31, AC-49)
 
-- `createWikimapiaClient(options)` **never throws**. It copies only the four data fields (`apiKey`, `language`, `retryLimit`, `fallbackWaitSeconds`) into a fresh object, leaving out keys whose value is `undefined`. It then calls `ClientConfigSchema.safeParse` on that object. `ClientConfigSchema` is a `strictObject`, so passing `transport` or `clock` to it would fail. At runtime `options` may lack `apiKey`, because the AC-31 test casts `{}`.
+- `createWikimapiaClient(options)` **never throws**. It copies only the four data fields (`apiKey`, `language`, `retryLimit`, `fallbackWaitSeconds`) into a fresh object, leaving out keys whose value is `undefined`. It then calls `ClientConfigSchema.safeParse` on that object. `ClientConfigSchema` is a `strictObject`, so passing `transport` or `clock` to it would fail. At runtime `options` may lack `apiKey`, because the AC-31 test casts `{}`. The unit tests (`tests/wikimapia/client.test.ts`, "factory robustness") also pass `null` and `undefined`, and an `apiKey` of the wrong type.
+- **Typing of the options (unit 07, `.agrules` section 5).** `createWikimapiaClient` and `resolveConfig` keep the contract parameter type `WikimapiaClientOptions`; it is never widened to `unknown`. `resolveConfig` passes `options` to the private `configCandidate(source: UncheckedOptions): Partial<ClientConfig>`. Because this is a parameter and not an assignment, TypeScript does not narrow the union, so the `null` check is not flagged by `no-unnecessary-condition`. `configCandidate` returns `{}` when `source` is `null` or `undefined`. Otherwise it builds the candidate field by field with conditional spreads (`...(source.apiKey === undefined ? {} : { apiKey: source.apiKey })`, and the same for `language`, `retryLimit` and `fallbackWaitSeconds`). It uses no loop over a key list, no `Record<string, unknown>` and no `as` cast. The key used to redact a configuration failure is `typeof candidate.apiKey === 'string' ? candidate.apiKey.trim() : ''`, which keeps the wrong-type case (`apiKey: 987654321`) safe. `transport` and `clock` are read as `options.transport` and `options.clock` (already typed by the contract, so no cast) only **after** `ClientConfigSchema.safeParse` succeeds. A successful parse implies that `options` is a non-null object.
 - On success it uses the **parsed** values. `apiKey` is trimmed by the schema, and that trimmed key is the one sent and redacted. It fills in defaults: `retryLimit ?? DEFAULT_RETRY_LIMIT`, `fallbackWaitSeconds ?? DEFAULT_FALLBACK_WAIT_SECONDS`, `transport ?? createFetchTransport()`, `clock ?? systemClock`.
 - On failure it still returns a client. Every call of that client resolves to `{ ok: false, failure: { kind: 'configuration', message } }` before any input validation or transport call. The message is built from issue paths and Zod messages only (e.g. `Wikimapia client is not configured: apiKey: API key is required`) and never contains a value. An invalid `language` or a negative `retryLimit` is also reported as `configuration`, because it is the only kind that fits.
 - The default transport is created lazily or as a closure that reads `globalThis.fetch` at call time. Merely creating a client must never call `fetch` (AC-38).
@@ -230,7 +242,7 @@ If any check fails, return `{ ok: false, issues }` with no partial value. Otherw
 #### 1.4.8 Transport and failure mapping (`execute.ts`, AC-33, AC-34)
 
 - Call the transport inside `try { await deps.transport({ url }) }`, so that both rejection and a synchronous throw are caught. Either one becomes `{ kind: 'connection', message: 'Wikimapia could not be reached' }` with **no** `status` key. The error's own message is never copied, because it contains the URL (the Simulated Wikimapia deliberately puts the keyed URL in it). The message may include `error.cause.code` when it is a string matching `/^[A-Z][A-Z0-9_]*$/` (e.g. `ECONNREFUSED`, `UND_ERR_CONNECT_TIMEOUT`, `TimeoutError`), which helps crawl diagnostics.
-- The transport's result is validated with `TransportResponseSchema` (boundary rule). If it fails: `unexpected_response`, path `[]`, `transport returned a malformed response`.
+- The transport's result is validated with `TransportResponseSchema` (boundary rule). If it fails: `unexpected_response`, path `[]`, `transport returned a malformed response`. In `TransportOutcome` the result is typed as the transport's declared return type `TransportResponse`, not as `unknown` (unit 07). This changes only the static type: the `safeParse` stays, because an injected transport is an Operator-supplied boundary and the unit tests feed it malformed results through casts.
 - A `status` outside 200..299 gives `{ kind: 'connection', message: 'Wikimapia answered with HTTP status N', status }`. The body is not inspected.
 - **Never rejects:** the whole body of `executeRequest` and of each public client method is guarded. Any exception not anticipated above (including a rejecting `clock.sleep` or a mapping bug) becomes `unexpected_response` with path `[]` and the fixed message `internal client error`. Its original message is not copied. Contract tests never reach this guard.
 
@@ -351,6 +363,33 @@ Units are ordered by dependency. Each one can be routed, tested and implemented 
 
 **Refactor note (2026-10-21, code style, `.agrules` section 5):** behaviour is unchanged. The type aliases and interfaces that U1 to U5 originally declared in their modules (`Normalized<T>` in `normalize.ts`, `Interpretation<T>` in `interpret.ts`, `ClientResult<T>`, `ExecuteDeps` and `TransportOutcome` in `execute.ts`, `Resolved` in `client.ts`) now live in `src/wikimapia/types.ts` (sections 1.1 and 1.3). The source modules no longer export them, and tests import them from `../../src/wikimapia/types` with `import type`. All relative imports in `src/`, `tests/` and `contracts/` are extensionless. Wherever the units below say a module provides one of these types, read it as `types.ts`. This refactor is routed as one corrective unit, not as a new unit here. Done when: `pnpm exec vitest run --no-color tests/wikimapia contracts` is still all green (all contract tests pass: 127 as counted by Vitest on 2026-10-21, since `it.each` cases count separately and the HTTPS change added 3 tests), `pnpm exec tsc --noEmit` reports 0 errors, `pnpm lint` reports 0 problems, and no relative import under `src/` or `tests/` ends in `.js` or `.ts`.
 
+**Refactor note (2026-10-22, narrow `unknown`, `.agrules` section 5):** behaviour is unchanged. The new rule "`unknown` Only for Truly Unknown Values" allows `unknown` only for (a) caught errors and their `cause`, (b) `JSON.parse` output, (c) raw driver or library results parsed with Zod on the next line, and (d) the parameter of a validator that checks untrusted input. It also forbids (e) `Record<string, unknown>` as a stand-in for a known shape and (f) widening a contract-typed parameter to `unknown`. An inventory of `src/wikimapia/*.ts` (`grep -n unknown`, 2026-10-22: 11 lines, 14 occurrences) is classified below. This refactor is routed as **one corrective unit, unit 07**, not as a change to U1 to U5. Its design is in sections 1.3, 1.4.1 and 1.4.8. Wherever U4 or U5 below describe the old `unknown` signatures, read them as this table.
+
+| # | Location (2026-10-22) | Current | Verdict | Replacement / justification |
+|---|---|---|---|---|
+| 1 | `types.ts:32` `TransportOutcome` | `response: unknown` | **NARROW** | `response: TransportResponse` (contract type, the declared return type of `WikimapiaTransport`; `callTransport` already annotates `const response: TransportResponse`). Not the fetch `Response`: `fetch` is wrapped inside `runtime.ts`, and the transport returns `{ status, body }`. `TransportResponseSchema.safeParse(outcome.response)` in `execute.ts` stays (1.4.8). Add `TransportResponse` to the `import type` in `types.ts`. |
+| 2 | `types.ts:32` `TransportOutcome` | `error: unknown` | **KEEP** | Clause (a): it holds the value caught in `callTransport`. |
+| 3 | `interpret.ts:21` `parseJson` return | `value: unknown` | **KEEP** | Clause (b): `JSON.parse` output, validated next by `RawDebugResponseSchema` / the raw schema. |
+| 4 | `interpret.ts:23` | `const value: unknown = JSON.parse(body)` | **KEEP** | Clause (b). The annotation is also what stops `JSON.parse`'s `any` from spreading. |
+| 5 | `client.ts:39` `readOption` | `options: unknown` | **NARROW** (remove) | Violates (f): the contract types the options as `WikimapiaClientOptions` (`CreateWikimapiaClientFn`). `readOption` is deleted. Its job moves to `configCandidate(source: UncheckedOptions)` (1.3, 1.4.1), with `UncheckedOptions = Partial<WikimapiaClientOptions> \| null \| undefined` in `types.ts`. |
+| 6 | `client.ts:39` `readOption` | return `unknown` | **NARROW** (remove) | Field reads become typed property accesses: `source.apiKey: string \| undefined`, `source.language: string \| undefined`, `source.retryLimit` / `source.fallbackWaitSeconds: number \| undefined`, `options.transport: WikimapiaTransport \| undefined`, `options.clock: Clock \| undefined`. |
+| 7 | `client.ts:41` | `(options as Record<string, unknown>)[key]` | **NARROW** (remove) | Violates (e). Replaced by the typed property accesses of row 6. The two follow-on casts at `client.ts:66-67` (`as WikimapiaTransport \| undefined`, `as Clock \| undefined`) disappear with it. |
+| 8 | `client.ts:44` `resolveConfig` | `options: unknown` | **NARROW** | `options: WikimapiaClientOptions` (contract type, unchanged from `createWikimapiaClient`). Violates (f) today. |
+| 9 | `client.ts:45` | `const data: Record<string, unknown> = {}` | **NARROW** | `const candidate: Partial<ClientConfig> = configCandidate(options)` (`ClientConfig` is the contract `z.infer` of `ClientConfigSchema`, imported with `import type`). Violates (e) today. `CONFIG_FIELDS` and the loop are removed, because a loop over a union of keys cannot assign typed values. |
+| 10 | `execute.ts:38` `causeCode` | `error: unknown` | **KEEP** | Clause (a): a caught error, coming from `TransportOutcome.error`. |
+| 11 | `execute.ts:40` | `const cause: unknown = error.cause` | **KEEP** | Clause (a): the error's `cause` (`Error.cause` is `unknown` in the lib types). |
+| 12 | `execute.ts:42` | `const code: unknown = cause.code` | **KEEP** | Clause (a): a property of the `cause`, narrowed by `typeof` and `ERROR_CODE_PATTERN` on the next line. |
+| 13 | `execute.ts:46` `connectionFailure` | `error: unknown` | **KEEP** | Clause (a): a caught error. |
+| 14 | `execute.ts:61` | `catch (error: unknown)` | **KEEP** | Clause (a). |
+
+No narrowing above needs a contract change: rows 1 and 5 to 9 use only existing contract types (`TransportResponse`, `WikimapiaClientOptions`, `ClientConfig`, `WikimapiaTransport`, `Clock`). There is no KEEP-with-reason entry.
+
+**Behaviour preservation (binding for unit 07).** The current `readOption` makes the factory tolerate `null` and `undefined` options, missing fields, and an `apiKey` of the wrong type (unit tests "configuration failure" and "factory robustness" in `tests/wikimapia/client.test.ts`). Unit 07 keeps all of this through `UncheckedOptions` and the rules in 1.4.1: return `{}` for `null` or `undefined`, leave out `undefined` fields, take the redaction key through a `typeof === 'string'` check, and read `transport`/`clock` only after a successful parse. The `ClientConfigSchema.safeParse` input therefore has the same keys and values as before, so the issues and messages are identical.
+
+**Scope.** Only the `src/wikimapia/*.ts` files named in the table change (`types.ts`, `client.ts`). `execute.ts` and `interpret.ts` need no edit, since `callTransport` already annotates `TransportResponse`. No test file is edited. The `unknown` uses in `tests/wikimapia/*.ts` were not inventoried here; if the orchestrator wants them checked against the rule, that is a separate corrective unit. `contracts/` is unchanged.
+
+**Done when:** `pnpm exec vitest run --no-color tests/wikimapia contracts` is still all green, with the same number of passing tests as just before the unit (record both counts in the AL2 report; no hard count). `pnpm exec tsc --noEmit` reports 0 errors and `pnpm lint` reports 0 problems. `grep -n unknown src/wikimapia/*.ts` shows only the 8 KEEP lines, one occurrence each (`types.ts` x1: `TransportOutcome` with `error: unknown` only; `interpret.ts` x2; `execute.ts` x5). `src/wikimapia/client.ts` contains no `unknown`, no `Record<`, no `readOption` and no `as ` type assertion. `src/wikimapia/types.ts` exports `UncheckedOptions` and has no runtime code.
+
 **Baseline caveat for U1 to U4 (historical):** until U5 created `src/wikimapia/client.ts`, `pnpm exec tsc --noEmit` and `pnpm lint` each reported the single known error for the missing `../src/wikimapia/client` import in `contracts/wikimapia-client.test.ts`. "No new errors" in the Done-when lists below means that this is the only error reported.
 
 ### U1. Issue mapping and normalisation (pure)
@@ -417,6 +456,7 @@ Units are ordered by dependency. Each one can be routed, tested and implemented 
 
 - Module resolution is `"module": "preserve"` + `"moduleResolution": "bundler"`, not `nodenext`. Write relative imports without an extension (`from './types'`, `from '../../contracts/wikimapia-client.schema'`). Do not add `.js` or `.ts`, and do not turn on `allowImportingTsExtensions`.
 - Declare no `type` or `interface` outside `src/wikimapia/types.ts`. Import from it with a top-level `import type { ... } from './types'` (`verbatimModuleSyntax`), not with inline `type` specifiers mixed into a value import. A value import of `./types` would be wrong, since the module has no runtime exports. Do not re-export contract `z.infer` types from `types.ts`.
+- `unknown` (`.agrules` section 5): only for caught errors and their `cause`, `JSON.parse` output, and validator parameters that check untrusted input. Never widen a contract-typed parameter (`WikimapiaClientOptions`, `TransportResponse`, ...) to `unknown`, and never use `Record<string, unknown>` or an `as` cast to read a known shape. Use the contract type, or a dedicated type in `types.ts` such as `UncheckedOptions`. When a runtime-robustness check (`null` options) would be flagged by `no-unnecessary-condition`, pass the value as a parameter typed with the honest wider type, as in `configCandidate` (1.4.1). Do not declare the wider type with `const x: Wider = value`, because assignment narrowing removes it again.
 - `strictTypeChecked`: use `String(n)` in template literals (`restrict-template-expressions`); no non-null assertions (use `at`-style guards or `noUncheckedIndexedAccess`-safe loops); a public method with no `await` should not be `async` (`require-await`), so return `Promise.resolve(...)` instead; no floating promises.
 - `exactOptionalPropertyTypes`: never assign `undefined` to an optional output key. Leave the key out instead (the contract output schemas use `exactOptional()` and reject an explicit `undefined`).
 - Zod 4: `z.core.$ZodIssue` is the issue type; `safeParse(...).error.issues`; never `parse` (which throws) on external data inside the client.
