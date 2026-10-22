@@ -44,8 +44,8 @@ Four decoupled components:
   - Generate batch embeddings for comments/descriptions into vector columns.
   - Substeps, each its own `/add` feature, in order:
     1. **Wikimapia API client:** typed client for `box` (enumerate places in a bbox) and `place.getbyid` (details and comments), Zod schemas for responses, handling of the `debug` rate-limit response. Proves we can make requests and parse real responses. No DB. **Done** (feature `wikimapia-client`, `src/wikimapia/`, contracts in `contracts/wikimapia-client.schema.ts`).
-    2. **Storage:** Postgres + PostGIS + pgvector in docker-compose, Knex migrations, Objection models for places and comments. Schema informed by real responses from substep 1.
-    3. **Hydration jobs:** crawl jobs that walk a bbox through the client and upsert into the DB, idempotent and resumable, runnable on a schedule.
+    2. **Storage:** Postgres + PostGIS + pgvector in docker-compose, Knex migrations, Objection models for places and comments. Schema informed by real responses from substep 1. **Done** (feature `storage`, `src/db/`, contracts in `contracts/storage.schema.ts`, entry point `createPlaceStore`).
+    3. **Hydration jobs:** crawl jobs that walk a bbox through the client and upsert into the DB, idempotent and resumable, runnable on a schedule. **Done** (feature `hydration`, `src/crawl/`, crawl progress tables in `src/db/`, contracts in `contracts/hydration.schema.ts`, entry points `runCrawl` and `runCrawlCommand`). Run with `pnpm crawl --region <name> [--dry-run] [--relist] [--budget <n>] [--min-interval <seconds>] [--refresh-age <days>]`; regions `belgrade` (big Belgrade, 7,920 tiles) and `belgrade-small` (4 tiles, for test runs). Scheduling is done by OS cron / Task Scheduler; there is no in-process scheduler.
     4. **Embeddings:** batch-embed place descriptions and comments with `text-embedding-3-small` into `vector(1536)` columns. Idempotent (skips unchanged text) and resumable. Kept separate from hydration so the crawled data can be inspected before paying for embeddings, and so embedding can be rerun on its own.
 
 - **Stage 2: Hybrid Search & Intent Engine**
@@ -86,13 +86,14 @@ Four decoupled components:
 - **Data source:** the Wikimapia API, crawled offline into Postgres; dumps are too hard to obtain. Search never calls Wikimapia live; it queries the local index.
 - **Database access:** Knex (migrations, query builder) + Objection (models). PostGIS and pgvector columns go through `knex.raw` and the `pgvector` npm package.
 - **Embeddings:** `text-embedding-3-small` via the OpenAI API, 1536-dim. `bge-m3` is dropped (it is 1024-dim). Changing the model later means re-embedding everything.
+- **Crawl progress storage:** three tables (`crawl_runs`, `crawl_passes`, `crawl_finished_pages`) written with the Knex query builder and read through Zod row schemas, without Objection models. One live run per region (advisory lock plus a partial unique index); a run silent for more than 1 hour counts as abandoned and can be taken over, and a live run renews its activity at least every 15 minutes. `--relist` always starts a new listing pass; an incomplete older pass is kept but never resumed.
 - **Module resolution:** `module: preserve` + `moduleResolution: bundler` (decided 2026-10-21), so relative imports are extensionless. Runnable scripts (ETL, crawl, embedding jobs) run through `tsx` or a build step, not plain `node`.
 
 ## Open Decisions
 
 - **HTTP framework** for the backend API (e.g. Fastify) — decided by the first AL4 spec that needs it.
 - **Frontend location** in the repo (same repo / separate package) — decided at Stage 4.
-- **Wikimapia API rate limit** — not documented; a 2016 report says 100 requests per 5 minutes. The crawl needs one `getbyid` call per place, so measure the quota with the real key before sizing it.
+- **Wikimapia API rate limit** — not documented; a 2016 report says 100 requests per 5 minutes. The crawl uses half of that by default (minimum 6 s between requests, retries included; 500 requests per run). Each crawl run's summary (requests, rate-limit waits and seconds waited) is how the real quota gets measured.
 
 ---
 
