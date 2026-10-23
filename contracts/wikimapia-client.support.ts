@@ -3,7 +3,9 @@
  *
  * Layer:    AL5 (Contracts). Not part of the subject under test.
  * Derives:  docs/al6-requirements/20261020-wikimapia-client-al6.md (glossary "Simulated
- *           Wikimapia", "Simulated Clock", "Recorded Response", "Reconstructed Fixture"; AC-38)
+ *           Wikimapia", "Simulated Clock", "Recorded Response", "Reconstructed Fixture"; AC-38);
+ *           docs/al6-requirements/20261022-crawl-run1-fixes-al6.md (AC-43, AC-44: the Run 1
+ *           recordings without Tags and the reconstructed Key Quota fixture)
  * Enforces: .agrules section 4 (no live network in tests, recorded fixtures without key or
  *           Commenter IPs, synthetic API key only).
  *
@@ -13,6 +15,7 @@
 import { readFileSync } from 'node:fs';
 import {
   RawBoxResponseSchema,
+  RawDebugResponseSchema,
   RawPlaceDetailsSchema,
   type Clock,
   type RawBoxResponse,
@@ -34,7 +37,10 @@ export type FixtureName =
   | 'getbyid-55.json'
   | 'getbyid-62587-nested-replies.json'
   | 'debug-rate-limit.json'
-  | 'debug-error.json';
+  | 'debug-error.json'
+  | 'getbyid-1391132-no-tags.json'
+  | 'getbyid-8918979-no-tags.json'
+  | 'debug-key-quota.json';
 
 export const FIXTURE_NAMES: readonly FixtureName[] = [
   'box-belgrade-page1.json',
@@ -45,6 +51,9 @@ export const FIXTURE_NAMES: readonly FixtureName[] = [
   'getbyid-62587-nested-replies.json',
   'debug-rate-limit.json',
   'debug-error.json',
+  'getbyid-1391132-no-tags.json',
+  'getbyid-8918979-no-tags.json',
+  'debug-key-quota.json',
 ];
 
 export function fixturePath(name: FixtureName | 'README.md'): URL {
@@ -91,6 +100,29 @@ export function rateLimitAnswer(seconds: number | string): TransportResponse {
   const text = fixtureText('debug-rate-limit.json');
   if (!text.includes('7 seconds')) throw new Error('rate-limit fixture changed unexpectedly');
   return answer(text.replace('7 seconds', `${String(seconds)} seconds`));
+}
+
+/** The Key Quota body of AC-44, exactly as observed in Run 1 and quoted in CLAUDE.md. */
+export const KEY_QUOTA_BODY = '{"debug":{"code":1004,"message":"Key limit has been reached"}}';
+
+/** The reconstructed Key Quota fixture as a successful HTTP answer (crawl-run1-fixes AC-8). */
+export function keyQuotaAnswer(): TransportResponse {
+  return fixtureAnswer('debug-key-quota.json');
+}
+
+/**
+ * In-memory variant of the Key Quota fixture (AC-12, AC-13, AC-14): `code` replaced (or removed
+ * with `null`) and/or `message` replaced. Built by the smallest change from the stored file.
+ */
+export function keyQuotaVariant(change: {
+  code?: number | null;
+  message?: string;
+}): TransportResponse {
+  const body = RawDebugResponseSchema.parse(JSON.parse(fixtureText('debug-key-quota.json')));
+  if (change.code === null) Reflect.deleteProperty(body.debug, 'code');
+  else if (change.code !== undefined) body.debug.code = change.code;
+  if (change.message !== undefined) body.debug.message = change.message;
+  return answer(body);
 }
 
 /** Synthetic Commenter IPs re-added for privacy tests (AC-11, AC-37, AC-45). Not real IPs. */

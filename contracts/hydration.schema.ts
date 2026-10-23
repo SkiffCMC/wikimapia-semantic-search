@@ -3,7 +3,11 @@
  *
  * Layer:    AL5 (Contracts). Source of truth for AL4 design and AL2 implementation.
  * Derives:  docs/al6-requirements/20261022-hydration-al6.md (revision 2, AC-1 .. AC-71,
- *           R1 .. R4, stakeholder decisions Q1 .. Q10), intent docs/al7-intent/20261022-hydration-al7.md
+ *           R1 .. R4, stakeholder decisions Q1 .. Q10), intent docs/al7-intent/20261022-hydration-al7.md;
+ *           amended by docs/al6-requirements/20261022-crawl-run1-fixes-al6.md section 5.2 (Run
+ *           Outcome Quota Exhausted, parked / skipped / released counts, the Explicit Retry option
+ *           `retryParked` / `--retry-parked`). Failure Records, Parking and Explicit Retry
+ *           storage are contracted in ./crawl-run1-fixes.schema.ts.
  * Enforces: .agrules section 1 "Offline Ingestion" (idempotent, resumable, paced, backs off on
  *           errors), section 2 (every input and every stored or reported shape is checked with
  *           Zod; invalid configuration is a handled failure), section 3 (all SQL, including the
@@ -356,6 +360,11 @@ export const CrawlRequestSchema = z.strictObject({
   regionName: z.string().exactOptional(),
   dryRun: z.boolean().exactOptional(),
   relist: z.boolean().exactOptional(),
+  /**
+   * Explicit Retry (crawl-run1-fixes AC-37, AC-40, decision Q5): at the start of this Run, release
+   * every Parked Place among the Region Places. No Place ID: always the whole Region.
+   */
+  retryParked: z.boolean().exactOptional(),
   requestBudget: z.number().exactOptional(),
   minRequestIntervalSeconds: z.number().exactOptional(),
   refreshAgeDays: z.number().exactOptional(),
@@ -410,6 +419,8 @@ export const RunOutcomeSchema = z.enum([
   'completed',
   'budget_reached',
   'rate_limited',
+  /** crawl-run1-fixes AC-15 .. AC-20: the Client reported Key Quota Exhausted. A Clean Stop. */
+  'quota_exhausted',
   'interrupted',
   'planned',
   'failed',
@@ -420,12 +431,14 @@ export type RunOutcome = z.infer<typeof RunOutcomeSchema>;
 export const CLEAN_STOP_OUTCOMES: readonly RunOutcome[] = [
   'budget_reached',
   'rate_limited',
+  'quota_exhausted',
   'interrupted',
 ];
 
 /**
  * Exit status of the Crawl Command (AC-45, AC-61): success (0) for Completed, Budget Reached,
- * Rate Limited and Planned; failure (1) for Failed and Interrupted.
+ * Rate Limited, Quota Exhausted (crawl-run1-fixes AC-19, decision Q7) and Planned; failure (1)
+ * for Failed and Interrupted.
  */
 export function exitCodeFor(outcome: RunOutcome): 0 | 1 {
   return outcome === 'failed' || outcome === 'interrupted' ? 1 : 0;
@@ -463,6 +476,10 @@ export type ItemFailureCounts = z.infer<typeof ItemFailureCountsSchema>;
  * - `detailsSaved`: successful Details Saves; `detailsChanged`: those reported Created or Updated.
  * - `placesStillDue`: Places Due for Details of the Region at the end (same cutoff as the Run).
  * - `itemFailures` = sum of `itemFailuresByKind`.
+ * - crawl-run1-fixes AC-39 (Parking, 0 for a Dry Run): `placesParkedThisRun`: Places that became
+ *   Parked Places in this Run; `placesParked`: Region Places that are Parked (and therefore
+ *   skipped, not counted in `placesStillDue`) at the end of the Run; `placesReleased`: Places
+ *   released by the Explicit Retry of this Run (0 without the option).
  */
 export const RunCountsSchema = z
   .strictObject({
@@ -481,6 +498,13 @@ export const RunCountsSchema = z
     placesStillDue: CountSchema,
     itemFailures: CountSchema,
     itemFailuresByKind: ItemFailureCountsSchema,
+    placesParkedThisRun: CountSchema,
+    placesParked: CountSchema,
+    placesReleased: CountSchema,
+  })
+  .refine((c) => c.placesParkedThisRun <= c.placesParked, {
+    message: 'Places parked in this Run are still Parked at its end',
+    path: ['placesParkedThisRun'],
   })
   .refine((c) => c.wikimapiaRequests === c.listingRequests + c.detailsRequests, {
     message: 'wikimapiaRequests = listingRequests + detailsRequests',
@@ -523,6 +547,9 @@ export const ZERO_RUN_COUNTS: RunCounts = {
     invalid_request: 0,
     invalid_data: 0,
   },
+  placesParkedThisRun: 0,
+  placesParked: 0,
+  placesReleased: 0,
 };
 
 /**
@@ -547,7 +574,8 @@ export type RunSummary = z.infer<typeof RunSummarySchema>;
  * Labels of the plain-text Run Summary (AC-54): `summaryText` has one `Label: value` line per
  * item, in this order, values as plain decimal numbers, moments as `MomentSchema` text and the
  * outcome as its OUTCOME_LABELS text. Per-kind failures appear as
- * `Item failures (<ITEM_FAILURE_LABELS[kind]>): n`, one line per kind.
+ * `Item failures (<ITEM_FAILURE_LABELS[kind]>): n`, one line per kind. A Quota Exhausted Run
+ * also shows `Wikimapia message: <text>` (crawl-run1-fixes AC-18).
  */
 export const SUMMARY_LABELS = {
   regionName: 'Region',
@@ -568,12 +596,17 @@ export const SUMMARY_LABELS = {
   detailsChanged: 'Details changed',
   placesStillDue: 'Places still due for details',
   itemFailures: 'Item failures',
+  placesParkedThisRun: 'Places parked in this run',
+  placesParked: 'Places parked (skipped)',
+  placesReleased: 'Places released by explicit retry',
+  wikimapiaMessage: 'Wikimapia message',
 } as const;
 
 export const OUTCOME_LABELS: Record<RunOutcome, string> = {
   completed: 'Completed',
   budget_reached: 'Budget Reached',
   rate_limited: 'Rate Limited',
+  quota_exhausted: 'Quota Exhausted',
   interrupted: 'Interrupted',
   planned: 'Planned',
   failed: 'Failed',
@@ -621,6 +654,10 @@ export type ItemFailureReport = z.infer<typeof ItemFailureReportSchema>;
  * - `itemFailures`: every Item Failure of the Run, in the order met (`summary.counts.itemFailures` of them).
  * - `runId`: present when the Run kept a Run Record (AC-53).
  * - `summaryText`: the plain-text Run Summary (AC-54, SUMMARY_LABELS).
+ * - `message` of a Quota Exhausted Run contains Wikimapia's message text (crawl-run1-fixes AC-18).
+ * - `parkedPlacesInRegion`: present for a Dry Run with `retryParked` (crawl-run1-fixes AC-40):
+ *   the number of Region Places that are Parked and that the option would release. The Dry Run's
+ *   counts stay all zero (AC-39) and nothing is changed in the database.
  */
 export const RunReportSchema = z
   .strictObject({
@@ -631,6 +668,7 @@ export const RunReportSchema = z
     plan: TilePlanSchema.exactOptional(),
     itemFailures: z.array(ItemFailureReportSchema),
     runId: RunIdSchema.exactOptional(),
+    parkedPlacesInRegion: CountSchema.exactOptional(),
   })
   .refine((r) => r.outcome === r.summary.outcome, {
     message: 'outcome equals summary.outcome',
@@ -647,6 +685,10 @@ export const RunReportSchema = z
   .refine((r) => r.itemFailures.length === r.summary.counts.itemFailures, {
     message: 'one report per Item Failure',
     path: ['itemFailures'],
+  })
+  .refine((r) => r.parkedPlacesInRegion === undefined || r.outcome === 'planned', {
+    message: 'the parked count is reported for a Dry Run only',
+    path: ['parkedPlacesInRegion'],
   });
 export type RunReport = z.infer<typeof RunReportSchema>;
 
@@ -672,6 +714,8 @@ export const CRAWL_COMMAND_OPTIONS = {
   budget: '--budget',
   minInterval: '--min-interval',
   refreshAge: '--refresh-age',
+  /** crawl-run1-fixes AC-40: the Explicit Retry option; takes no value. */
+  retryParked: '--retry-parked',
 } as const;
 
 /**
@@ -804,6 +848,7 @@ export const RunRecordStatusSchema = z.enum([
   'completed',
   'budget_reached',
   'rate_limited',
+  'quota_exhausted',
   'interrupted',
   'failed',
   'abandoned',

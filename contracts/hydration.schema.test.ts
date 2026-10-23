@@ -275,11 +275,13 @@ describe('AC-39, AC-71 Pacing (validator)', () => {
 });
 
 describe('AC-45, AC-61 Exit status', () => {
-  it('success for Completed, Budget Reached, Rate Limited, Planned; failure for Failed, Interrupted', () => {
+  // Amended by crawl-run1-fixes AC-19 (decision Q7): Quota Exhausted also reports success.
+  it('success for Completed, Budget Reached, Rate Limited, Quota Exhausted, Planned; failure for Failed, Interrupted', () => {
     const expected: Record<RunOutcome, 0 | 1> = {
       completed: 0,
       budget_reached: 0,
       rate_limited: 0,
+      quota_exhausted: 0,
       planned: 0,
       failed: 1,
       interrupted: 1,
