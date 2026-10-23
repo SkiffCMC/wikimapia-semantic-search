@@ -154,7 +154,7 @@ export function normalizePlaceDetails(raw: RawPlaceDetails): Normalized<PlaceDet
     placeId,
     title: raw.title,
     description: raw.description,
-    tags: raw.tags.map((tag) => ({ id: tag.id, title: tag.title })),
+    tags: (raw.tags ?? []).map((tag) => ({ id: tag.id, title: tag.title })),
     ...(parentId === 0 ? {} : { parentPlaceId: parentId }),
     isBuilding: raw.is_building,
     isRegion: raw.is_region,

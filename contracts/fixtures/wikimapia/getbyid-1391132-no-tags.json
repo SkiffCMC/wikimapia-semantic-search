@@ -1,0 +1,135 @@
+{
+  "id": 1391132,
+  "object_type": 1,
+  "language_id": 0,
+  "language_iso": "en",
+  "language_name": "English",
+  "urlhtml": "<a class=\"wikimapia-link\" href=\"http://wikimapia.org/1391132/Kolarac-Peoples-University-and-Concert-Hall\">Kolarac - Peoples' University and Concert Hall</a>",
+  "title": "Kolarac - Peoples' University and Concert Hall",
+  "description": "Kolarac - Peoples' University and Concert Hall\n +3811 16 37 609",
+  "wikipedia": "",
+  "is_building": true,
+  "is_region": false,
+  "is_deleted": false,
+  "parent_id": "0",
+  "x": "204563390",
+  "y": "448191407",
+  "pl": 422.47840181481,
+  "polygon": [
+    {
+      "x": 20.4561164,
+      "y": 44.8192062
+    },
+    {
+      "x": 20.4561593,
+      "y": 44.8191719
+    },
+    {
+      "x": 20.4561298,
+      "y": 44.8191529
+    },
+    {
+      "x": 20.4560413,
+      "y": 44.8192043
+    },
+    {
+      "x": 20.4558831,
+      "y": 44.8190863
+    },
+    {
+      "x": 20.4562747,
+      "y": 44.8188162
+    },
+    {
+      "x": 20.456567,
+      "y": 44.8190749
+    },
+    {
+      "x": 20.4564463,
+      "y": 44.8191434
+    },
+    {
+      "x": 20.4564329,
+      "y": 44.8191814
+    },
+    {
+      "x": 20.4563524,
+      "y": 44.8192043
+    },
+    {
+      "x": 20.4562961,
+      "y": 44.8191453
+    },
+    {
+      "x": 20.4562398,
+      "y": 44.8191814
+    },
+    {
+      "x": 20.4564034,
+      "y": 44.8193184
+    },
+    {
+      "x": 20.4566502,
+      "y": 44.8191586
+    },
+    {
+      "x": 20.456795,
+      "y": 44.819269
+    },
+    {
+      "x": 20.4564765,
+      "y": 44.8194652
+    }
+  ],
+  "comments": [],
+  "location": {
+    "lon": 20.456339,
+    "lat": 44.8191407,
+    "north": 44.8194652,
+    "south": 44.8188162,
+    "east": 20.456795,
+    "west": 20.4558831,
+    "street_id": "18323896",
+    "street": "Studentski Trg",
+    "country": "Serbia and Montenegro",
+    "state": "Central Serbia",
+    "place": "Belgrade",
+    "country_adm_id": 198295,
+    "gadm": [
+      {
+        "id": "1000",
+        "country": "0",
+        "level": "0",
+        "is_last_level": "0",
+        "name": "World",
+        "iso": null,
+        "type": null,
+        "translation": "World"
+      },
+      {
+        "id": "196",
+        "country": "196",
+        "level": "0",
+        "is_last_level": "0",
+        "name": "Serbia",
+        "iso": null,
+        "type": null,
+        "translation": "Serbia"
+      },
+      {
+        "id": "198205",
+        "country": "196",
+        "level": "1",
+        "is_last_level": "0",
+        "name": "Grad Beograd",
+        "iso": null,
+        "type": null,
+        "translation": "Grad Beograd"
+      }
+    ],
+    "city_id": "4875860",
+    "city": "Belgrade",
+    "cityguideDomain": null,
+    "zoom": 18
+  }
+}

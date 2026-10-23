@@ -47,9 +47,13 @@ export function createGateway(options: GatewayOptions): Gateway {
   /** Read through a function: `stop` may run during any await (heartbeat, sleep). */
   const isStopped = (): boolean => stopped !== undefined;
 
-  function stop(reason: StopReason, message?: string): void {
+  function stop(reason: StopReason, message?: string, wikimapiaMessage?: string): void {
     if (stopped !== undefined) return;
-    stopped = message === undefined ? { reason } : { reason, message };
+    stopped = {
+      reason,
+      ...(message !== undefined ? { message } : {}),
+      ...(wikimapiaMessage !== undefined ? { wikimapiaMessage } : {}),
+    };
   }
 
   async function renewIfDue(): Promise<void> {

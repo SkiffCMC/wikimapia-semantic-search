@@ -2,7 +2,10 @@
  * AL5 CONTRACT: Wikimapia API client (feature `wikimapia-client`, Stage 1 substep 1).
  *
  * Layer:    AL5 (Contracts). Source of truth for AL4 design and AL2 implementation.
- * Derives:  docs/al6-requirements/20261020-wikimapia-client-al6.md (AC-1 .. AC-50)
+ * Derives:  docs/al6-requirements/20261020-wikimapia-client-al6.md (AC-1 .. AC-50), as amended by
+ *           docs/al6-requirements/20261022-crawl-run1-fixes-al6.md section 5.1 (missing or null
+ *           `tags` = no Tags; Key Quota Response, code 1004, is the Client Failure
+ *           `key_quota_exhausted`, never retried and never waited for)
  * Enforces: .agrules section 2 (boundary rules: every external response is parsed with Zod
  *           before use, invalid input is a handled error), section 4 "No Commenter IPs"
  *           (the parsed comment type has no `user_ip`, at any reply depth), section 4
@@ -48,6 +51,12 @@ export const MAX_PAGE_SIZE = 100;
 export const DEFAULT_RETRY_LIMIT = 5;
 /** AC-27, rule 4: Wait Time used when a Rate-Limit Response states no readable seconds. */
 export const DEFAULT_FALLBACK_WAIT_SECONDS = 60;
+/**
+ * crawl-run1-fixes rule 3, decision Q8: the `debug.code` of a Key Quota Response. A `debug`
+ * answer is a Key Quota Response when its code is 1004, whatever its message says; the message
+ * alone ("Key limit has been reached" without code 1004) is a Wikimapia Error.
+ */
+export const KEY_QUOTA_CODE = 1004;
 /** AC-17: information blocks requested from `place.getbyid`. */
 export const PLACE_DETAILS_DATA_BLOCKS = ['main', 'geometry', 'location', 'comments'] as const;
 
@@ -210,7 +219,14 @@ export const RawCommentSchema = z.looseObject({
 });
 export type RawComment = z.infer<typeof RawCommentSchema>;
 
-/** `function=place.getbyid` answer with `data_blocks=main,geometry,location,comments`. */
+/**
+ * `function=place.getbyid` answer with `data_blocks=main,geometry,location,comments`.
+ * `tags` (amended by crawl-run1-fixes AC-1 .. AC-4, decision Q10): Wikimapia leaves the item out
+ * when a Place has no Tags (recorded: places 1391132, 8918979); missing and `null` both mean
+ * "no Tags" and the Client reports an empty list. Any other value must still be a list of Tags.
+ * This wire schema only admits the absence; turning it into `[]` is the Client's job (the output
+ * `PlaceDetailsSchema.tags` stays a required list). No other required item became optional (AC-5).
+ */
 export const RawPlaceDetailsSchema = z.looseObject({
   id: RawIdSchema,
   title: z.string(),
@@ -219,7 +235,7 @@ export const RawPlaceDetailsSchema = z.looseObject({
   is_building: z.boolean(),
   is_region: z.boolean(),
   is_deleted: z.boolean(),
-  tags: z.array(z.looseObject({ id: z.number().int().nonnegative(), title: z.string() })),
+  tags: z.array(z.looseObject({ id: z.number().int().nonnegative(), title: z.string() })).nullish(),
   parent_id: RawWholeNumberSchema,
   polygon: z.array(RawPointSchema),
   location: RawDetailsLocationSchema,
@@ -227,9 +243,13 @@ export const RawPlaceDetailsSchema = z.looseObject({
 });
 export type RawPlaceDetails = z.infer<typeof RawPlaceDetailsSchema>;
 
-/** Wikimapia's message envelope, used both for Rate-Limit Responses and for other errors. */
+/**
+ * Wikimapia's message envelope, used for Rate-Limit Responses, Key Quota Responses
+ * (`code: 1004`, crawl-run1-fixes) and other errors. `code` is absent in the rate-limit and
+ * other recorded or reconstructed bodies. Classify with `classifyDebugResponse`.
+ */
 export const RawDebugResponseSchema = z.looseObject({
-  debug: z.looseObject({ message: z.string() }),
+  debug: z.looseObject({ message: z.string(), code: RawWholeNumberSchema.optional() }),
 });
 export type RawDebugResponse = z.infer<typeof RawDebugResponseSchema>;
 
@@ -387,6 +407,19 @@ export const WikimapiaErrorFailureSchema = z.strictObject({
   wikimapiaMessage: z.string(),
 });
 
+/**
+ * Key Quota Exhausted (crawl-run1-fixes glossary, AC-8 .. AC-12): Wikimapia answered with a Key
+ * Quota Response. Never retried, never waited for. Carries Wikimapia's message text (with the API
+ * Key removed, AC-14) and the code 1004.
+ */
+export const KeyQuotaExhaustedFailureSchema = z.strictObject({
+  kind: z.literal('key_quota_exhausted'),
+  message: NonEmptyTextSchema,
+  /** Wikimapia's own message text, unchanged (may be empty, AC-12). */
+  wikimapiaMessage: z.string(),
+  code: z.literal(KEY_QUOTA_CODE),
+});
+
 export const ConnectionFailureSchema = z.strictObject({
   kind: z.literal('connection'),
   message: NonEmptyTextSchema,
@@ -405,6 +438,7 @@ export const ClientFailureSchema = z.discriminatedUnion('kind', [
   InvalidRequestFailureSchema,
   RateLimitExhaustedFailureSchema,
   WikimapiaErrorFailureSchema,
+  KeyQuotaExhaustedFailureSchema,
   ConnectionFailureSchema,
   UnexpectedResponseFailureSchema,
 ]);
@@ -458,7 +492,8 @@ export interface RateLimitMessageInfo {
 /**
  * Classifies the `debug.message` of a Wikimapia answer (AL6 rule 5). A Rate-Limit Response
  * says "You have reached the limit for this action. You need to wait for N seconds."; any
- * other message is a Wikimapia Error (AC-32).
+ * other message is a Wikimapia Error (AC-32). Looks at the message only: a `debug` answer with
+ * code 1004 is a Key Quota Response whatever this returns (use `classifyDebugResponse`).
  */
 export function parseRateLimitMessage(message: string): RateLimitMessageInfo {
   const wait = /\bwait for (\d+) seconds?\b/i.exec(message);
@@ -467,6 +502,28 @@ export function parseRateLimitMessage(message: string): RateLimitMessageInfo {
   const isRateLimit = limitReached || asksToWait;
   const seconds = wait?.[1];
   return seconds === undefined ? { isRateLimit } : { isRateLimit, waitSeconds: Number(seconds) };
+}
+
+/** How a `debug` answer is to be handled (crawl-run1-fixes rule 3 and Client rule 5 as amended). */
+export type DebugAnswerInfo =
+  | { kind: 'key_quota'; code: typeof KEY_QUOTA_CODE; message: string }
+  | { kind: 'rate_limit'; waitSeconds?: number }
+  | { kind: 'wikimapia_error'; message: string };
+
+/**
+ * Classifies the `debug` part of a Wikimapia answer. Code 1004 is checked first and wins over
+ * any message wording (AC-12, decision Q8); without it the message decides as in
+ * `parseRateLimitMessage` (Rate-Limit Response, or else a Wikimapia Error, AC-13).
+ */
+export function classifyDebugResponse(debug: RawDebugResponse['debug']): DebugAnswerInfo {
+  if (debug.code !== undefined && Number(debug.code) === KEY_QUOTA_CODE) {
+    return { kind: 'key_quota', code: KEY_QUOTA_CODE, message: debug.message };
+  }
+  const info = parseRateLimitMessage(debug.message);
+  if (!info.isRateLimit) return { kind: 'wikimapia_error', message: debug.message };
+  return info.waitSeconds === undefined
+    ? { kind: 'rate_limit' }
+    : { kind: 'rate_limit', waitSeconds: info.waitSeconds };
 }
 
 const COMMENTER_IP_KEY = /^(?:user_?ip|commenter_?ip)$/i;

@@ -1,6 +1,6 @@
 /**
  * AL2 unit tests: `src/crawl/config.ts` (AL4 1.3 `config.ts` signatures, 1.4.1 Resolving the Run;
- * AL6 AC-1, AC-5, AC-6, AC-60, AC-67).
+ * AL6 AC-1, AC-5, AC-6, AC-60, AC-67; crawl-run1-fixes AL4 1.2 step 1 `retryParked`, 1.4.11 usage).
  *
  * Pure and synchronous: no database, no network, no clock. Configurations come from the contract
  * (`DEFAULT_CRAWL_CONFIGURATION`) and the support file (`testConfiguration`, Region T). API keys
@@ -68,6 +68,56 @@ describe('resolveRun: success', () => {
     );
     expect(run.dryRun).toBe(false);
     expect(run.relist).toBe(false);
+  });
+
+  it('retryParked is false when absent', () => {
+    const run = resolved(resolveRun({ regionName: 'belgrade-small' }, DEFAULT_CRAWL_CONFIGURATION));
+    expect(run.retryParked).toBe(false);
+  });
+
+  it('retryParked is true when given', () => {
+    const run = resolved(
+      resolveRun({ regionName: 'belgrade-small', retryParked: true }, DEFAULT_CRAWL_CONFIGURATION),
+    );
+    expect(run.retryParked).toBe(true);
+  });
+
+  it('retryParked given as false stays false', () => {
+    const run = resolved(
+      resolveRun({ regionName: 'belgrade-small', retryParked: false }, DEFAULT_CRAWL_CONFIGURATION),
+    );
+    expect(run.retryParked).toBe(false);
+  });
+
+  it('retryParked combines with dryRun, relist and requestBudget', () => {
+    const run = resolved(
+      resolveRun(
+        {
+          regionName: REGION_T1.name,
+          retryParked: true,
+          dryRun: true,
+          relist: true,
+          requestBudget: 10,
+        },
+        testConfiguration(),
+      ),
+    );
+    expect(run.retryParked).toBe(true);
+    expect(run.dryRun).toBe(true);
+    expect(run.relist).toBe(true);
+    expect(run.configuration.requestBudget).toBe(10);
+    expect(run.plan).toStrictEqual(planTiles(REGION_T1));
+  });
+
+  it('retryParked does not change the resolved configuration or plan', () => {
+    const plain = resolved(resolveRun({ regionName: REGION_T1.name }, testConfiguration()));
+    const retrying = resolved(
+      resolveRun({ regionName: REGION_T1.name, retryParked: true }, testConfiguration()),
+    );
+    expect(retrying.configuration).toStrictEqual(plain.configuration);
+    expect(retrying.plan).toStrictEqual(plain.plan);
+    expect(retrying.dryRun).toBe(false);
+    expect(retrying.relist).toBe(false);
   });
 
   it('trims the asked Region Name', () => {
@@ -312,7 +362,7 @@ describe('resolveRun: missing Region (AC-60)', () => {
 describe('usageMessage', () => {
   it('has the AL4 form with the region option and the given names', () => {
     expect(usageMessage(['a', 'b-c'])).toBe(
-      `No region given. Usage: pnpm crawl ${CRAWL_COMMAND_OPTIONS.region} <name> [--dry-run] [--relist] [--budget <n>] [--min-interval <seconds>] [--refresh-age <days>]. Known regions: a, b-c.`,
+      `No region given. Usage: pnpm crawl ${CRAWL_COMMAND_OPTIONS.region} <name> [--dry-run] [--relist] [${CRAWL_COMMAND_OPTIONS.retryParked}] [--budget <n>] [--min-interval <seconds>] [--refresh-age <days>]. Known regions: a, b-c.`,
     );
   });
 });

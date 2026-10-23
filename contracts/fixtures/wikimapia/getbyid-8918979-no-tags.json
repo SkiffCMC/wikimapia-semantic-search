@@ -1,0 +1,86 @@
+{
+  "id": 8918979,
+  "object_type": 1,
+  "language_id": 0,
+  "language_iso": "en",
+  "language_name": "English",
+  "urlhtml": "<a class=\"wikimapia-link\" href=\"http://wikimapia.org/8918979/Zoran-%C4%90in%C4%91i%C4%87\">Zoran Đinđić</a>",
+  "title": "Zoran Đinđić",
+  "description": "Monument in Belgrade.",
+  "is_building": false,
+  "is_region": false,
+  "is_deleted": false,
+  "parent_id": "0",
+  "x": "204612287",
+  "y": "448164264",
+  "pl": 54.405882034942,
+  "polygon": [
+    {
+      "x": 20.4612207,
+      "y": 44.8163903
+    },
+    {
+      "x": 20.4612797,
+      "y": 44.8164207
+    },
+    {
+      "x": 20.4612368,
+      "y": 44.8164626
+    },
+    {
+      "x": 20.4611778,
+      "y": 44.8164321
+    }
+  ],
+  "comments": [],
+  "location": {
+    "lon": 20.4612287,
+    "lat": 44.8164264,
+    "north": 44.8164626,
+    "south": 44.8163903,
+    "east": 20.4612797,
+    "west": 20.4611778,
+    "street_id": "56981",
+    "street": "Trg Republike",
+    "country": "Serbia and Montenegro",
+    "state": "Central Serbia",
+    "place": "Belgrade",
+    "country_adm_id": 198295,
+    "gadm": [
+      {
+        "id": "1000",
+        "country": "0",
+        "level": "0",
+        "is_last_level": "0",
+        "name": "World",
+        "iso": null,
+        "type": null,
+        "translation": "World"
+      },
+      {
+        "id": "196",
+        "country": "196",
+        "level": "0",
+        "is_last_level": "0",
+        "name": "Serbia",
+        "iso": null,
+        "type": null,
+        "translation": "Serbia"
+      },
+      {
+        "id": "198205",
+        "country": "196",
+        "level": "1",
+        "is_last_level": "0",
+        "name": "Grad Beograd",
+        "iso": null,
+        "type": null,
+        "translation": "Grad Beograd"
+      }
+    ],
+    "city_id": "4875860",
+    "city": "Belgrade",
+    "cityguideDomain": null,
+    "zoom": 21
+  }
+}

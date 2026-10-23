@@ -2,15 +2,14 @@
  * Listing Phase (AL4 1.1 row `listing-phase.ts`, 1.3 `runListingPhase`, 1.4.6; U6): walks the
  * unfinished Tiles of the current Listing Pass in Tile Number order, one `box` page at a time
  * until a Short Page, and records every page through the atomic listing step (Listing Save +
- * Finished Page). No SQL; only store failures' and the Client's own messages are passed on.
+ * Finished Page). Item Failures are concluded through `concludeItemFailure` (Failure Record
+ * first; crawl-run1-fixes 1.4.4). No SQL; only store failures' and the Client's own messages are
+ * passed on.
  */
 import { toMoment } from '../../contracts/hydration.schema';
+import { concludeItemFailure, takenOverMessage } from './failures';
 import { requestWithBackoff } from './requests';
 import type { PassCursor, RunContext } from './types';
-
-export function takenOverMessage(regionName: string): string {
-  return `This Run for region "${regionName}" was taken over by a newer Run.`;
-}
 
 export async function runListingPhase(ctx: RunContext, pass: PassCursor): Promise<void> {
   const { gateway, client, repo, tally, run } = ctx;
@@ -30,8 +29,8 @@ export async function runListingPhase(ctx: RunContext, pass: PassCursor): Promis
       if (r.kind === 'stopped') return;
       if (r.kind === 'item_failure') {
         const message = `Tile ${String(n)} page ${String(page)}: ${r.message}`;
-        tally.itemFailure({ kind: 'listing_page', tileNumber: n, page }, r.failureKind, message);
-        ctx.progress(`Item failure: ${message}`);
+        const item = { kind: 'listing_page', tileNumber: n, page } as const;
+        if (!(await concludeItemFailure(ctx, item, r.failureKind, message))) return;
         break;
       }
 
@@ -50,8 +49,8 @@ export async function runListingPhase(ctx: RunContext, pass: PassCursor): Promis
       if (!s.ok) {
         if (s.failure.kind === 'invalid_data') {
           const message = `Tile ${String(n)} page ${String(page)}: the Place Store rejected the page: ${s.failure.message}`;
-          tally.itemFailure({ kind: 'listing_page', tileNumber: n, page }, 'invalid_data', message);
-          ctx.progress(`Item failure: ${message}`);
+          const item = { kind: 'listing_page', tileNumber: n, page } as const;
+          if (!(await concludeItemFailure(ctx, item, 'invalid_data', message))) return;
           break;
         }
         gateway.stop('failed', s.failure.message);

@@ -7,6 +7,10 @@
  * Extended by feature `hydration` (AL4 hydration 1.4.12, 2.5; AL3 routing
  * 20261022-hydration-01-schema, section 2.1 A): the 5th step, `undoLast`, and `emptyStore`
  * clearing Crawl Progress.
+ * Extended by feature `crawl-run1-fixes` (AL4 crawl-run1-fixes 1.4.9, 2.1 .. 2.4; AL3 routing
+ * 20261022-crawl-run1-fixes-02-schema, section 2.1 A): the 6th step (Failure Records, Explicit
+ * Retries, per-Place releases), `undoLast` of it, the `NOT VALID` status check after the undo,
+ * and `emptyStore` clearing all ten tables.
  * Stand-in for contract ACs AC-1 .. AC-6, AC-14 (structure), AC-57 (Schema Setup part) and AC-61
  * until `contracts/storage.test.ts` can load (U8).
  *
@@ -49,10 +53,29 @@ const STEP_NAMES = [
   '20261021_03_create_tags',
   '20261021_04_create_comments',
   '20261022_01_create_crawl_progress',
+  '20261022_02_create_item_failures',
 ] as const;
 
 const CRAWL_STEP = '20261022_01_create_crawl_progress';
+const FAILURES_STEP = '20261022_02_create_item_failures';
 const STORAGE_STEPS: readonly string[] = STEP_NAMES.slice(0, 4);
+const UP_TO_CRAWL_STEPS: readonly string[] = STEP_NAMES.slice(0, 5);
+
+/** The three Crawl Progress tables of feature `hydration` (step 5). */
+const HYDRATION_TABLES: readonly string[] = [
+  CRAWL_TABLES.runs,
+  CRAWL_TABLES.passes,
+  CRAWL_TABLES.finishedPages,
+];
+/** The three tables of step 6 (AL4 crawl-run1-fixes 2.2 .. 2.4). */
+const FAILURE_TABLES: readonly string[] = [
+  CRAWL_TABLES.itemFailures,
+  CRAWL_TABLES.explicitRetries,
+  CRAWL_TABLES.placeReleases,
+];
+const ALL_CRAWL_TABLES: readonly string[] = [...HYDRATION_TABLES, ...FAILURE_TABLES];
+
+const CHECK_VIOLATION = '23514';
 
 // ---------------------------------------------------------------------------
 // Expected structure (AL4 2.2 .. 2.4), columns in table order: [name, udtName]
@@ -205,20 +228,50 @@ async function rowCount(db: Knex, table: string): Promise<number> {
 
 const RunIdRowsSchema = z.array(z.object({ run_id: z.number().int().positive() }));
 
-/** One synthetic row in each Crawl Progress table (AL4 hydration 2.2 .. 2.4). */
-async function seedCrawlRows(db: Knex): Promise<void> {
-  const result: unknown = await db(CRAWL_TABLES.runs)
-    .insert({
-      region_name: 'test-region-a',
-      status: 'in_progress',
-      started_at: '2026-10-22T08:00:00Z',
-      ended_at: null,
-      last_activity: '2026-10-22T08:00:00Z',
-      counts: JSON.stringify({ requests: 0 }),
-    })
-    .returning('run_id');
+interface RunSeed {
+  region_name: string;
+  status: string;
+  started_at: string;
+  ended_at: string | null;
+  last_activity: string;
+  counts: string;
+}
+
+const LIVE_RUN: RunSeed = {
+  region_name: 'test-region-a',
+  status: 'in_progress',
+  started_at: '2026-10-22T08:00:00Z',
+  ended_at: null,
+  last_activity: '2026-10-22T08:00:00Z',
+  counts: JSON.stringify({ requests: 0 }),
+};
+
+/** A Run Record that ended with the Key Quota exhausted (AL4 crawl-run1-fixes 2.1). */
+const QUOTA_EXHAUSTED_RUN: RunSeed = {
+  region_name: 'test-region-b',
+  status: 'quota_exhausted',
+  started_at: '2026-10-22T08:00:00Z',
+  ended_at: '2026-10-22T08:09:00Z',
+  last_activity: '2026-10-22T08:09:00Z',
+  counts: JSON.stringify({ requests: 0 }),
+};
+
+async function insertRun(db: Knex, row: RunSeed): Promise<number> {
+  const result: unknown = await db(CRAWL_TABLES.runs).insert(row).returning('run_id');
   const run = RunIdRowsSchema.parse(result)[0];
   if (run === undefined) throw new Error('insert into crawl_runs returned no row');
+  return run.run_id;
+}
+
+/** Every column of one `crawl_runs` row, read through the query builder. */
+async function readRun(db: Knex, runId: number): Promise<unknown[]> {
+  const rows: unknown[] = await db(CRAWL_TABLES.runs).where({ run_id: runId }).select('*');
+  return rows;
+}
+
+/** One synthetic row in each Crawl Progress table (AL4 hydration 2.2 .. 2.4); returns the run id. */
+async function seedCrawlRows(db: Knex): Promise<number> {
+  const run = { run_id: await insertRun(db, LIVE_RUN) };
   await db(CRAWL_TABLES.passes).insert({
     region_name: 'test-region-a',
     pass_number: 1,
@@ -242,6 +295,73 @@ async function seedCrawlRows(db: Knex): Promise<void> {
     is_short: true,
     reported_total: 3,
     finished_at: '2026-10-22T08:01:00Z',
+  });
+  return run.run_id;
+}
+
+/**
+ * One synthetic row in each step-6 table (AL4 crawl-run1-fixes 2.2 .. 2.4), respecting the FK
+ * chain `crawl_runs` -> `crawl_explicit_retries` -> `crawl_place_releases`.
+ */
+async function seedFailureRows(db: Knex, runId: number): Promise<void> {
+  await db(CRAWL_TABLES.itemFailures).insert({
+    run_id: runId,
+    place_id: 900,
+    tile_number: null,
+    page_no: null,
+    failure_kind: 'connection',
+    message: 'Place 900: synthetic connection failure',
+    failed_at: '2026-10-22T08:02:00Z',
+  });
+  await db(CRAWL_TABLES.explicitRetries).insert({
+    run_id: runId,
+    region_name: 'test-region-a',
+    retried_at: '2026-10-22T08:00:00Z',
+    places_released: 1,
+  });
+  await db(CRAWL_TABLES.placeReleases).insert({
+    run_id: runId,
+    place_id: 900,
+    released_at: '2026-10-22T08:00:00Z',
+  });
+}
+
+/** One synthetic row in each of the four store tables, through the models. */
+async function seedStoreRows(db: Knex): Promise<void> {
+  await PlaceModel.query(db).insert({
+    place_id: 900,
+    name: 'Synthetic place 900',
+    wikimapia_url: 'http://wikimapia.org/900/Synthetic-place-900',
+    location_lon: 20.457,
+    location_lat: 44.817,
+    bound_north: 44.817,
+    bound_south: 44.817,
+    bound_east: 20.457,
+    bound_west: 20.457,
+    outline: [],
+    centre_point: 'SRID=4326;POINT(20.457 44.817)',
+    outline_shape: null,
+  });
+  await TagModel.query(db).insert({ tag_id: 194, title: 'synthetic tag' });
+  await PlaceTagModel.query(db).insert({ place_id: 900, tag_id: 194, presence: 'present', position: 0 });
+  await CommentModel.query(db).insert({
+    place_id: 900,
+    num: 1,
+    parent_num: null,
+    lang_id: 1,
+    author: 'synthetic author',
+    author_user_id: 1,
+    author_photo_url: null,
+    message: 'synthetic comment',
+    good_votes: 0,
+    bad_votes: 0,
+    is_blocked: false,
+    is_deleted: false,
+    posted_at_epoch_seconds: 1_700_000_000,
+    moderator_user_id: 0,
+    moderator_name: null,
+    presence: 'present',
+    position: 0,
   });
 }
 
@@ -275,7 +395,7 @@ describe('isTestDatabaseName', () => {
 // ---------------------------------------------------------------------------
 
 describe('MIGRATIONS', () => {
-  it('lists exactly the five steps, in order', () => {
+  it('lists exactly the six steps, in order', () => {
     expect(MIGRATIONS.map((m) => m.name)).toStrictEqual([...STEP_NAMES]);
   });
 
@@ -296,7 +416,7 @@ describe('Setup from nothing (AC-1, AC-2)', () => {
     okSteps(await setup.apply());
   });
 
-  it('after undoAll, apply returns the five steps in order and inspect shows them applied', async () => {
+  it('after undoAll, apply returns the six steps in order and inspect shows them applied', async () => {
     okSteps(await setup.undoAll());
     expect(okSteps(await setup.apply())).toStrictEqual([...STEP_NAMES]);
 
@@ -309,7 +429,7 @@ describe('Setup from nothing (AC-1, AC-2)', () => {
     }
     const tables = tableNames(structure);
     for (const table of Object.values(STORE_TABLES)) expect(tables).toContain(table);
-    for (const table of Object.values(CRAWL_TABLES)) expect(tables).toContain(table);
+    for (const table of ALL_CRAWL_TABLES) expect(tables).toContain(table);
   }, 60_000);
 });
 
@@ -337,13 +457,13 @@ describe('Setup undone (AC-4)', () => {
     okSteps(await setup.apply());
   });
 
-  it('undoAll returns the five steps, newest first', async () => {
+  it('undoAll returns the six steps, newest first', async () => {
     const undone = okSteps(await setup.undoAll());
     expect([...undone].sort()).toStrictEqual([...STEP_NAMES].sort());
     expect(undone).toStrictEqual([...STEP_NAMES].reverse());
   }, 60_000);
 
-  it('after undoAll nothing is applied, all five are pending, tables and extensions are gone', async () => {
+  it('after undoAll nothing is applied, all six are pending, tables and extensions are gone', async () => {
     okSteps(await setup.undoAll());
 
     const after = await inspectOk();
@@ -351,7 +471,7 @@ describe('Setup undone (AC-4)', () => {
     expect(after.pendingSteps).toStrictEqual([...STEP_NAMES]);
     const tables = tableNames(after);
     for (const table of Object.values(STORE_TABLES)) expect(tables).not.toContain(table);
-    for (const table of Object.values(CRAWL_TABLES)) expect(tables).not.toContain(table);
+    for (const table of ALL_CRAWL_TABLES) expect(tables).not.toContain(table);
     expect(after.enabledExtensions).not.toContain('vector');
     expect(after.enabledExtensions).not.toContain('postgis');
   }, 60_000);
@@ -361,7 +481,7 @@ describe('Setup undone (AC-4)', () => {
     expect(okSteps(await setup.undoAll())).toStrictEqual([]);
   }, 60_000);
 
-  it('re-applying after undoAll returns the same five steps', async () => {
+  it('re-applying after undoAll returns the same six steps', async () => {
     okSteps(await setup.undoAll());
     expect(okSteps(await setup.apply())).toStrictEqual([...STEP_NAMES]);
     const reapplied = await inspectOk();
@@ -502,17 +622,20 @@ describe('emptyStore on the migrated Test Database (AC-61)', () => {
     expect((await inspectOk()).pendingSteps).toStrictEqual([]);
   });
 
-  it('clears all seven tables: the four store tables and the three crawl tables', async () => {
+  it('clears all ten tables: the four store tables and the six crawl tables', async () => {
     const db = testDb();
-    await TagModel.query(db).insert({ tag_id: 194, title: 'synthetic tag' });
-    await seedCrawlRows(db);
-    for (const table of Object.values(CRAWL_TABLES)) expect(await rowCount(db, table)).toBe(1);
+    await seedStoreRows(db);
+    const runId = await seedCrawlRows(db);
+    await seedFailureRows(db, runId);
+
+    const allTables = [...Object.values(STORE_TABLES), ...ALL_CRAWL_TABLES];
+    expect(allTables).toHaveLength(10);
+    expect(new Set(allTables).size).toBe(10);
+    for (const table of allTables) expect(await rowCount(db, table)).toBe(1);
 
     const emptied = EmptyResultSchema.parse(await setup.emptyStore());
     expect(emptied).toStrictEqual({ ok: true, value: {} });
 
-    const allTables = [...Object.values(STORE_TABLES), ...Object.values(CRAWL_TABLES)];
-    expect(allTables).toHaveLength(7);
     for (const table of allTables) expect(await rowCount(db, table)).toBe(0);
     expect((await inspectOk()).pendingSteps).toStrictEqual([]);
   });
@@ -529,6 +652,7 @@ describe('emptyStore on the migrated Test Database (AC-61)', () => {
 describe('emptyStore without the tables (AC-61)', () => {
   afterEach(async () => {
     okSteps(await setup.apply());
+    EmptyResultSchema.parse(await setup.emptyStore());
   });
 
   it('resolves store_unavailable after undoAll', async () => {
@@ -537,10 +661,30 @@ describe('emptyStore without the tables (AC-61)', () => {
     expect(failure.kind).toBe('store_unavailable');
   }, 60_000);
 
-  it('after undoLast (crawl tables absent) succeeds and still clears the store tables', async () => {
+  it('after undoLast of step 6 (new tables absent) succeeds and clears the store and hydration tables', async () => {
+    expect(EmptyResultSchema.parse(await setup.emptyStore()).ok).toBe(true);
+    const db = testDb();
+    await seedStoreRows(db);
+    await seedCrawlRows(db);
+    expect(okSteps(await setup.undoLast())).toStrictEqual([FAILURES_STEP]);
+    const tables = tableNames(await inspectOk());
+    for (const table of FAILURE_TABLES) expect(tables).not.toContain(table);
+    for (const table of HYDRATION_TABLES) expect(tables).toContain(table);
+    for (const table of HYDRATION_TABLES) expect(await rowCount(db, table)).toBe(1);
+
+    expect(EmptyResultSchema.parse(await setup.emptyStore())).toStrictEqual({ ok: true, value: {} });
+    for (const table of Object.values(STORE_TABLES)) expect(await rowCount(db, table)).toBe(0);
+    for (const table of HYDRATION_TABLES) expect(await rowCount(db, table)).toBe(0);
+  }, 60_000);
+
+  it('after two undoLast (all crawl tables absent) succeeds and still clears the store tables', async () => {
+    expect(EmptyResultSchema.parse(await setup.emptyStore()).ok).toBe(true);
     const db = testDb();
     await TagModel.query(db).insert({ tag_id: 194, title: 'synthetic tag' });
+    expect(okSteps(await setup.undoLast())).toStrictEqual([FAILURES_STEP]);
     expect(okSteps(await setup.undoLast())).toStrictEqual([CRAWL_STEP]);
+    const tables = tableNames(await inspectOk());
+    for (const table of ALL_CRAWL_TABLES) expect(tables).not.toContain(table);
 
     expect(EmptyResultSchema.parse(await setup.emptyStore())).toStrictEqual({ ok: true, value: {} });
     expect(await TagModel.query(db).resultSize()).toBe(0);
@@ -548,7 +692,7 @@ describe('emptyStore without the tables (AC-61)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 9b. undoLast (hydration AC-55, AC-56; AL4 hydration 1.4.12, 2.5)
+// 9b. undoLast (hydration AC-55, AC-56; crawl-run1-fixes AC-41; AL4 crawl-run1-fixes 2.1)
 // ---------------------------------------------------------------------------
 
 describe('undoLast', () => {
@@ -557,43 +701,85 @@ describe('undoLast', () => {
     EmptyResultSchema.parse(await setup.emptyStore());
   });
 
-  it('undoes exactly the Crawl Progress step and leaves the store tables and their rows unchanged', async () => {
+  it('undoes exactly step 6 and leaves the hydration and store tables and their rows unchanged', async () => {
     expect(EmptyResultSchema.parse(await setup.emptyStore()).ok).toBe(true);
     const db = testDb();
     await TagModel.query(db).insert({ tag_id: 194, title: 'synthetic tag' });
-    const before = (await TagModel.query(db).orderBy('tag_id')).map((t) => ({
+    const runId = await insertRun(db, LIVE_RUN);
+    const tagsBefore = (await TagModel.query(db).orderBy('tag_id')).map((t) => ({
       tag_id: t.tag_id,
       title: t.title,
     }));
-    expect(before).toStrictEqual([{ tag_id: 194, title: 'synthetic tag' }]);
+    expect(tagsBefore).toStrictEqual([{ tag_id: 194, title: 'synthetic tag' }]);
+    const runBefore = await readRun(db, runId);
+    expect(runBefore).toHaveLength(1);
 
-    expect(okSteps(await setup.undoLast())).toStrictEqual([CRAWL_STEP]);
+    expect(okSteps(await setup.undoLast())).toStrictEqual([FAILURES_STEP]);
 
     const after = await inspectOk();
-    expect(after.appliedSteps).toStrictEqual([...STORAGE_STEPS]);
-    expect(after.pendingSteps).toStrictEqual([CRAWL_STEP]);
+    expect(after.appliedSteps).toStrictEqual([...UP_TO_CRAWL_STEPS]);
+    expect(after.pendingSteps).toStrictEqual([FAILURES_STEP]);
     const tables = tableNames(after);
-    for (const table of Object.values(CRAWL_TABLES)) expect(tables).not.toContain(table);
+    for (const table of FAILURE_TABLES) expect(tables).not.toContain(table);
+    for (const table of HYDRATION_TABLES) expect(tables).toContain(table);
     for (const table of Object.values(STORE_TABLES)) expect(tables).toContain(table);
 
-    const kept = (await TagModel.query(db).orderBy('tag_id')).map((t) => ({
+    const tagsKept = (await TagModel.query(db).orderBy('tag_id')).map((t) => ({
       tag_id: t.tag_id,
       title: t.title,
     }));
-    expect(kept).toStrictEqual(before);
+    expect(tagsKept).toStrictEqual(tagsBefore);
+    expect(await readRun(db, runId)).toStrictEqual(runBefore);
   }, 60_000);
 
-  it('a second undoLast undoes the comments step; apply then re-applies both', async () => {
+  it('a second undoLast undoes the Crawl Progress step, a third the comments step; apply re-applies all three', async () => {
+    expect(okSteps(await setup.undoLast())).toStrictEqual([FAILURES_STEP]);
     expect(okSteps(await setup.undoLast())).toStrictEqual([CRAWL_STEP]);
+    const afterSecond = await inspectOk();
+    expect(afterSecond.appliedSteps).toStrictEqual([...STORAGE_STEPS]);
+    expect(afterSecond.pendingSteps).toStrictEqual([CRAWL_STEP, FAILURES_STEP]);
+    for (const table of ALL_CRAWL_TABLES) expect(tableNames(afterSecond)).not.toContain(table);
+    for (const table of Object.values(STORE_TABLES)) expect(tableNames(afterSecond)).toContain(table);
+
     expect(okSteps(await setup.undoLast())).toStrictEqual(['20261021_04_create_comments']);
 
     const after = await inspectOk();
     expect(after.appliedSteps).toStrictEqual(STEP_NAMES.slice(0, 3));
-    expect(after.pendingSteps).toStrictEqual(['20261021_04_create_comments', CRAWL_STEP]);
+    expect(after.pendingSteps).toStrictEqual([
+      '20261021_04_create_comments',
+      CRAWL_STEP,
+      FAILURES_STEP,
+    ]);
     expect(tableNames(after)).not.toContain(STORE_TABLES.comments);
 
-    expect(okSteps(await setup.apply())).toStrictEqual(['20261021_04_create_comments', CRAWL_STEP]);
-    expect((await inspectOk()).pendingSteps).toStrictEqual([]);
+    expect(okSteps(await setup.apply())).toStrictEqual([
+      '20261021_04_create_comments',
+      CRAWL_STEP,
+      FAILURES_STEP,
+    ]);
+    const reapplied = await inspectOk();
+    expect(reapplied.pendingSteps).toStrictEqual([]);
+    for (const table of ALL_CRAWL_TABLES) expect(tableNames(reapplied)).toContain(table);
+  }, 60_000);
+
+  it('an existing quota_exhausted Run Record does not make the undo of step 6 fail and stays readable', async () => {
+    expect(EmptyResultSchema.parse(await setup.emptyStore()).ok).toBe(true);
+    const db = testDb();
+    const runId = await insertRun(db, QUOTA_EXHAUSTED_RUN);
+    const before = await readRun(db, runId);
+    expect(before).toHaveLength(1);
+
+    expect(okSteps(await setup.undoLast())).toStrictEqual([FAILURES_STEP]);
+    expect(await readRun(db, runId)).toStrictEqual(before);
+
+    // The NOT VALID check still guards new writes while step 6 is undone.
+    await expect(
+      insertRun(db, { ...QUOTA_EXHAUSTED_RUN, region_name: 'test-region-c' }),
+    ).rejects.toMatchObject({ code: CHECK_VIOLATION, constraint: 'crawl_runs_status_valid' });
+
+    expect(okSteps(await setup.apply())).toStrictEqual([FAILURES_STEP]);
+    expect(await readRun(db, runId)).toStrictEqual(before);
+    expect(await rowCount(db, CRAWL_TABLES.runs)).toBe(1);
   }, 60_000);
 
   it('with nothing applied (after undoAll) returns no steps', async () => {

@@ -11,6 +11,7 @@ import {
   failedReport,
   formatPlanLines,
   formatSummaryText,
+  oneLine,
   plannedReport,
 } from '../../src/crawl/report';
 import { planTiles } from '../../src/crawl/tile-plan';
@@ -20,6 +21,7 @@ import {
   ItemFailureKindSchema,
   OUTCOME_LABELS,
   RunCountsSchema,
+  RunOutcomeSchema,
   RunReportSchema,
   SUMMARY_LABELS,
   ZERO_RUN_COUNTS,
@@ -32,7 +34,7 @@ import { RUN_START } from '../../contracts/hydration.support';
 const RUN_END = '2026-10-22T09:05:00Z';
 const LINE_PATTERN = /^[A-Z][^:{}[\]"]*: \S.*$/;
 const ZERO_GATEWAY = { listingRequests: 0, detailsRequests: 0, rateLimitWaits: 0, rateLimitWaitMs: 0 };
-const ZERO_EXTRA = { tilesUnfinished: 0, placesStillDue: 0 };
+const ZERO_EXTRA = { tilesUnfinished: 0, placesStillDue: 0, placesParked: 0, placesReleased: 0 };
 
 /** AC-51: the exact numbers of the AL6 scenario. */
 const AC51_COUNTS: RunCounts = {
@@ -51,6 +53,9 @@ const AC51_COUNTS: RunCounts = {
   placesStillDue: 1,
   itemFailures: 1,
   itemFailuresByKind: { ...ZERO_RUN_COUNTS.itemFailuresByKind, wikimapia_error: 1 },
+  placesParkedThisRun: 0,
+  placesParked: 0,
+  placesReleased: 0,
 };
 
 const AC51_FAILURE: ItemFailureReport = {
@@ -72,7 +77,7 @@ function ac51Tally(): ReturnType<typeof createTally> {
 function ac51Snapshot(tally: ReturnType<typeof createTally>): RunCounts {
   return tally.snapshot(
     { listingRequests: 1, detailsRequests: 4, rateLimitWaits: 1, rateLimitWaitMs: 7000 },
-    { tilesUnfinished: 0, placesStillDue: 1 },
+    { tilesUnfinished: 0, placesStillDue: 1, placesParked: 0, placesReleased: 0 },
   );
 }
 
@@ -116,6 +121,11 @@ function expectedLines(summary: RunSummary): string[] {
       `${SUMMARY_LABELS.itemFailures} (${ITEM_FAILURE_LABELS[kind]}): ${String(c.itemFailuresByKind[kind])}`,
     );
   }
+  lines.push(
+    `${SUMMARY_LABELS.placesParkedThisRun}: ${String(c.placesParkedThisRun)}`,
+    `${SUMMARY_LABELS.placesParked}: ${String(c.placesParked)}`,
+    `${SUMMARY_LABELS.placesReleased}: ${String(c.placesReleased)}`,
+  );
   return lines;
 }
 
@@ -237,7 +247,7 @@ describe('createTally: snapshot maps gateway counts and extras', () => {
   it('sums requests, converts wait ms to seconds and copies the extras', () => {
     const counts = createTally().snapshot(
       { listingRequests: 3, detailsRequests: 5, rateLimitWaits: 2, rateLimitWaitMs: 1500 },
-      { tilesUnfinished: 4, placesStillDue: 6 },
+      { tilesUnfinished: 4, placesStillDue: 6, placesParked: 0, placesReleased: 0 },
     );
     expect(counts.listingRequests).toBe(3);
     expect(counts.detailsRequests).toBe(5);
@@ -270,7 +280,7 @@ describe('formatSummaryText (AC-54)', () => {
     const text = formatSummaryText(summary);
     expect(text).toBe(expectedLines(summary).join('\n'));
     expect(text.endsWith('\n')).toBe(false);
-    expect(text.split('\n')).toHaveLength(4 + 14 + 5);
+    expect(text.split('\n')).toHaveLength(4 + 14 + 5 + 3);
   });
 
   it('starts with Region, outcome label, Started at and Ended at', () => {
@@ -511,6 +521,378 @@ describe('plannedReport (AC-10)', () => {
     expect(report.itemFailures).toStrictEqual([]);
     expect(report).not.toHaveProperty('runId');
     expect(report.summaryText).toBe(formatSummaryText(report.summary));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// crawl-run1-fixes U5 (AL4 1.4.10; AC-18, AC-39, AC-40): parking counts, the
+// `Wikimapia message:` line, `parkedPlacesInRegion`
+// ---------------------------------------------------------------------------
+
+const KEY_QUOTA_TEXT = 'Key limit has been reached';
+const KEY_QUOTA_STOP_MESSAGE = `Wikimapia key quota exhausted (code 1004): ${KEY_QUOTA_TEXT}`;
+const WIKIMAPIA_LINE_PREFIX = `${SUMMARY_LABELS.wikimapiaMessage}:`;
+
+/** AC-51 counts with distinct parking numbers, so each line shows its own count. */
+const PARKING_COUNTS: RunCounts = {
+  ...AC51_COUNTS,
+  placesParkedThisRun: 1,
+  placesParked: 2,
+  placesReleased: 3,
+};
+
+function parkingLines(c: RunCounts): string[] {
+  return [
+    `${SUMMARY_LABELS.placesParkedThisRun}: ${String(c.placesParkedThisRun)}`,
+    `${SUMMARY_LABELS.placesParked}: ${String(c.placesParked)}`,
+    `${SUMMARY_LABELS.placesReleased}: ${String(c.placesReleased)}`,
+  ];
+}
+
+function quotaSummary(counts: RunCounts = PARKING_COUNTS): RunSummary {
+  return ac51Summary({ outcome: 'quota_exhausted', counts });
+}
+
+function hasWikimapiaLine(text: string): boolean {
+  return text.split('\n').some((line) => line.startsWith(WIKIMAPIA_LINE_PREFIX));
+}
+
+describe('createTally: parking counts', () => {
+  it('a fresh tally has parkedThisRun 0 and snapshots 0 for the three counts', () => {
+    const tally = createTally();
+    expect(tally.parkedThisRun).toBe(0);
+    const counts = tally.snapshot(ZERO_GATEWAY, ZERO_EXTRA);
+    expect(counts.placesParkedThisRun).toBe(0);
+    expect(counts.placesParked).toBe(0);
+    expect(counts.placesReleased).toBe(0);
+  });
+
+  it('each placeParked() adds 1 to parkedThisRun', () => {
+    const tally = createTally();
+    tally.placeParked();
+    expect(tally.parkedThisRun).toBe(1);
+    tally.placeParked();
+    tally.placeParked();
+    expect(tally.parkedThisRun).toBe(3);
+  });
+
+  it('snapshot writes placesParkedThisRun = parkedThisRun and copies placesParked and placesReleased', () => {
+    const tally = createTally();
+    tally.placeParked();
+    tally.placeParked();
+    const counts = tally.snapshot(ZERO_GATEWAY, {
+      tilesUnfinished: 0,
+      placesStillDue: 0,
+      placesParked: 5,
+      placesReleased: 4,
+    });
+    expect(counts.placesParkedThisRun).toBe(2);
+    expect(counts.placesParked).toBe(5);
+    expect(counts.placesReleased).toBe(4);
+    expect(() => RunCountsSchema.parse(counts)).not.toThrow();
+  });
+
+  it('placesParkedThisRun === placesParked passes RunCountsSchema', () => {
+    const tally = createTally();
+    tally.placeParked();
+    tally.placeParked();
+    const counts = tally.snapshot(ZERO_GATEWAY, {
+      tilesUnfinished: 0,
+      placesStillDue: 0,
+      placesParked: 2,
+      placesReleased: 0,
+    });
+    expect(counts.placesParkedThisRun).toBe(2);
+    expect(counts.placesParked).toBe(2);
+    expect(() => RunCountsSchema.parse(counts)).not.toThrow();
+  });
+
+  it('placesParked larger than placesParkedThisRun passes RunCountsSchema', () => {
+    const tally = createTally();
+    tally.placeParked();
+    const counts = tally.snapshot(ZERO_GATEWAY, {
+      tilesUnfinished: 0,
+      placesStillDue: 3,
+      placesParked: 7,
+      placesReleased: 1,
+    });
+    expect(counts.placesParkedThisRun).toBe(1);
+    expect(counts.placesParked).toBe(7);
+    expect(counts.placesReleased).toBe(1);
+    expect(() => RunCountsSchema.parse(counts)).not.toThrow();
+  });
+
+  it('the AC-51 tally with parking extras keeps every other count', () => {
+    const tally = ac51Tally();
+    tally.placeParked();
+    const counts = tally.snapshot(
+      { listingRequests: 1, detailsRequests: 4, rateLimitWaits: 1, rateLimitWaitMs: 7000 },
+      { tilesUnfinished: 0, placesStillDue: 1, placesParked: 2, placesReleased: 3 },
+    );
+    expect(counts).toStrictEqual(PARKING_COUNTS);
+    expect(() => RunCountsSchema.parse(counts)).not.toThrow();
+  });
+});
+
+describe('oneLine', () => {
+  it('turns every whitespace run (spaces, tabs, \\n, \\r\\n) into one space and trims', () => {
+    expect(oneLine('a  b')).toBe('a b');
+    expect(oneLine('a\tb')).toBe('a b');
+    expect(oneLine('a\nb')).toBe('a b');
+    expect(oneLine('a\r\nb')).toBe('a b');
+    expect(oneLine('  Key limit\n\t has   been\r\n reached \t')).toBe('Key limit has been reached');
+  });
+
+  it('keeps a single-line text unchanged', () => {
+    expect(oneLine('Key limit has been reached')).toBe('Key limit has been reached');
+    expect(oneLine('Key [key removed] is not valid')).toBe('Key [key removed] is not valid');
+  });
+
+  it("gives '' for '' and whitespace-only text", () => {
+    expect(oneLine('')).toBe('');
+    expect(oneLine('   ')).toBe('');
+    expect(oneLine(' \t\n\r\n ')).toBe('');
+  });
+});
+
+describe('formatSummaryText: parking lines and the Wikimapia message line', () => {
+  it('shows the three parking lines after the per-kind lines, in SUMMARY_LABELS order', () => {
+    const summary = ac51Summary({ counts: PARKING_COUNTS });
+    const lines = formatSummaryText(summary).split('\n');
+    expect(lines.slice(-3)).toStrictEqual(parkingLines(PARKING_COUNTS));
+    const lastKind = ItemFailureKindSchema.options[ItemFailureKindSchema.options.length - 1];
+    if (lastKind === undefined) throw new Error('no Item Failure kinds');
+    expect(lines.at(-4)).toBe(
+      `${SUMMARY_LABELS.itemFailures} (${ITEM_FAILURE_LABELS[lastKind]}): ${String(PARKING_COUNTS.itemFailuresByKind[lastKind])}`,
+    );
+    expect(lines.join('\n')).toBe(expectedLines(summary).join('\n'));
+  });
+
+  it('no outcome other than quota_exhausted shows a Wikimapia message line, even with notes', () => {
+    const others = RunOutcomeSchema.options.filter((o) => o !== 'quota_exhausted');
+    expect(others.length).toBeGreaterThan(0);
+    for (const outcome of others) {
+      const summary = ac51Summary({ outcome, counts: PARKING_COUNTS });
+      const text = formatSummaryText(summary, { wikimapiaMessage: KEY_QUOTA_TEXT });
+      expect(hasWikimapiaLine(text)).toBe(false);
+      expect(text).not.toContain(KEY_QUOTA_TEXT);
+      expect(text).toBe(expectedLines(summary).join('\n'));
+    }
+  });
+
+  it('quota_exhausted without notes, or with notes lacking wikimapiaMessage, shows no such line', () => {
+    const summary = quotaSummary();
+    for (const text of [formatSummaryText(summary), formatSummaryText(summary, {})]) {
+      expect(hasWikimapiaLine(text)).toBe(false);
+      expect(text).toBe(expectedLines(summary).join('\n'));
+    }
+  });
+
+  it('quota_exhausted with the message: the last four lines are the parking lines and the Wikimapia line', () => {
+    const summary = quotaSummary();
+    const text = formatSummaryText(summary, { wikimapiaMessage: KEY_QUOTA_TEXT });
+    const lines = text.split('\n');
+    expect(lines.slice(-4)).toStrictEqual([
+      ...parkingLines(PARKING_COUNTS),
+      `${SUMMARY_LABELS.wikimapiaMessage}: ${KEY_QUOTA_TEXT}`,
+    ]);
+    expect(lines.at(-1)).toBe('Wikimapia message: Key limit has been reached');
+    expect(text).toBe(
+      [...expectedLines(summary), `${SUMMARY_LABELS.wikimapiaMessage}: ${KEY_QUOTA_TEXT}`].join('\n'),
+    );
+    expect(lines).toContain(`${SUMMARY_LABELS.outcome}: ${OUTCOME_LABELS.quota_exhausted}`);
+    expect(text.endsWith('\n')).toBe(false);
+    for (const line of lines) expect(line).toMatch(LINE_PATTERN);
+  });
+
+  for (const blank of ['', '   ', ' \t\n\r\n ']) {
+    it(`a blank Wikimapia message (${JSON.stringify(blank)}) shows (empty)`, () => {
+      const text = formatSummaryText(quotaSummary(), { wikimapiaMessage: blank });
+      const lines = text.split('\n');
+      expect(lines.at(-1)).toBe(`${SUMMARY_LABELS.wikimapiaMessage}: (empty)`);
+      expect(lines.filter((l) => l.startsWith(WIKIMAPIA_LINE_PREFIX))).toHaveLength(1);
+      for (const line of lines) expect(line).toMatch(LINE_PATTERN);
+    });
+  }
+
+  it('a multi-line Wikimapia message gives one line', () => {
+    const summary = quotaSummary();
+    const text = formatSummaryText(summary, {
+      wikimapiaMessage: '  Key limit\n\thas been\r\nreached  ',
+    });
+    const lines = text.split('\n');
+    expect(lines).toHaveLength(expectedLines(summary).length + 1);
+    expect(lines.at(-1)).toBe(`${SUMMARY_LABELS.wikimapiaMessage}: ${KEY_QUOTA_TEXT}`);
+    for (const line of lines) expect(line).toMatch(LINE_PATTERN);
+  });
+});
+
+describe('buildReport: quota_exhausted and the Wikimapia message', () => {
+  function quotaReport(wikimapiaMessage: string | undefined): ReturnType<typeof buildReport> {
+    const tally = ac51Tally();
+    return buildReport({
+      outcome: 'quota_exhausted',
+      message: KEY_QUOTA_STOP_MESSAGE,
+      regionName: 'test-one',
+      startedAt: RUN_START,
+      endedAt: RUN_END,
+      counts: ac51Snapshot(tally),
+      failures: tally.failures,
+      runId: 11,
+      ...(wikimapiaMessage === undefined ? {} : { wikimapiaMessage }),
+    });
+  }
+
+  it('passes RunReportSchema, keeps the message and shows the Wikimapia line', () => {
+    const report = quotaReport(KEY_QUOTA_TEXT);
+    expect(() => RunReportSchema.parse(report)).not.toThrow();
+    expect(report.outcome).toBe('quota_exhausted');
+    expect(report.summary.outcome).toBe('quota_exhausted');
+    expect(report.message).toBe(KEY_QUOTA_STOP_MESSAGE);
+    expect(report.runId).toBe(11);
+    expect(report.summaryText).toBe(
+      formatSummaryText(report.summary, { wikimapiaMessage: KEY_QUOTA_TEXT }),
+    );
+    expect(report.summaryText.split('\n')).toContain(
+      `${SUMMARY_LABELS.wikimapiaMessage}: ${KEY_QUOTA_TEXT}`,
+    );
+    for (const line of report.summaryText.split('\n')) expect(line).toMatch(LINE_PATTERN);
+  });
+
+  it('never adds a wikimapiaMessage key to the report object', () => {
+    const report = quotaReport(KEY_QUOTA_TEXT);
+    expect(Object.keys(report)).not.toContain('wikimapiaMessage');
+    expect(Object.keys(report.summary)).not.toContain('wikimapiaMessage');
+  });
+
+  it('a blank Wikimapia message gives (empty) and still passes RunReportSchema', () => {
+    const report = quotaReport('');
+    expect(() => RunReportSchema.parse(report)).not.toThrow();
+    expect(report.outcome).toBe('quota_exhausted');
+    expect(report.summaryText.split('\n').at(-1)).toBe(
+      `${SUMMARY_LABELS.wikimapiaMessage}: (empty)`,
+    );
+  });
+
+  it('quota_exhausted without a wikimapiaMessage: no Wikimapia line', () => {
+    const report = quotaReport(undefined);
+    expect(() => RunReportSchema.parse(report)).not.toThrow();
+    expect(report.outcome).toBe('quota_exhausted');
+    expect(hasWikimapiaLine(report.summaryText)).toBe(false);
+    expect(report.summaryText).toBe(formatSummaryText(report.summary));
+  });
+
+  it('another outcome given a wikimapiaMessage: no Wikimapia line', () => {
+    const report = buildReport({
+      outcome: 'budget_reached',
+      message: 'Request Budget reached',
+      regionName: 'test-one',
+      startedAt: RUN_START,
+      endedAt: RUN_END,
+      counts: ZERO_RUN_COUNTS,
+      failures: [],
+      runId: 4,
+      wikimapiaMessage: KEY_QUOTA_TEXT,
+    });
+    expect(() => RunReportSchema.parse(report)).not.toThrow();
+    expect(report.outcome).toBe('budget_reached');
+    expect(hasWikimapiaLine(report.summaryText)).toBe(false);
+    expect(report.summaryText).toBe(formatSummaryText(report.summary));
+    expect(Object.keys(report)).not.toContain('wikimapiaMessage');
+  });
+});
+
+describe('plannedReport and buildReport: parkedPlacesInRegion (AC-40)', () => {
+  for (const n of [4, 0]) {
+    it(`plannedReport(plan, at, ${String(n)}) has parkedPlacesInRegion ${String(n)} and zero counts`, () => {
+      const plan = planTiles(BELGRADE_SMALL_REGION);
+      const report = plannedReport(plan, RUN_START, n);
+      expect(() => RunReportSchema.parse(report)).not.toThrow();
+      expect(report.outcome).toBe('planned');
+      expect(report.plan).toStrictEqual(plan);
+      expect(Object.keys(report)).toContain('parkedPlacesInRegion');
+      expect(report.parkedPlacesInRegion).toBe(n);
+      expect(report.summary.counts).toStrictEqual(ZERO_RUN_COUNTS);
+      expect(report.summaryText).toBe(formatSummaryText(report.summary));
+    });
+  }
+
+  it('plannedReport(plan, at) has no parkedPlacesInRegion key', () => {
+    const report = plannedReport(planTiles(BELGRADE_SMALL_REGION), RUN_START);
+    expect(() => RunReportSchema.parse(report)).not.toThrow();
+    expect(Object.keys(report)).not.toContain('parkedPlacesInRegion');
+  });
+
+  it('buildReport planned with parkedPlacesInRegion passes RunReportSchema', () => {
+    const plan = planTiles(BELGRADE_SMALL_REGION);
+    const report = buildReport({
+      outcome: 'planned',
+      regionName: plan.regionName,
+      startedAt: RUN_START,
+      endedAt: RUN_START,
+      counts: ZERO_RUN_COUNTS,
+      failures: [],
+      plan,
+      parkedPlacesInRegion: 2,
+    });
+    expect(() => RunReportSchema.parse(report)).not.toThrow();
+    expect(report.outcome).toBe('planned');
+    expect(report.parkedPlacesInRegion).toBe(2);
+  });
+
+  it('buildReport without parkedPlacesInRegion has no such key', () => {
+    const report = buildReport({
+      outcome: 'completed',
+      startedAt: RUN_START,
+      endedAt: RUN_END,
+      counts: ZERO_RUN_COUNTS,
+      failures: [],
+    });
+    expect(Object.keys(report)).not.toContain('parkedPlacesInRegion');
+  });
+
+  it('parkedPlacesInRegion with a non-Planned outcome fails the gate: the internal-error failed report', () => {
+    const report = buildReport({
+      outcome: 'completed',
+      regionName: 'test-one',
+      startedAt: RUN_START,
+      endedAt: RUN_END,
+      counts: ZERO_RUN_COUNTS,
+      failures: [],
+      runId: 5,
+      parkedPlacesInRegion: 2,
+    });
+    expect(report).toStrictEqual(
+      failedReport('Crawl failed: internal error (report check)', 'test-one', RUN_END),
+    );
+    expect(Object.keys(report)).not.toContain('parkedPlacesInRegion');
+    expect(() => RunReportSchema.parse(report)).not.toThrow();
+  });
+});
+
+describe('failedReport and plannedReport show 0 on each parking line (AC-39)', () => {
+  const zeroLines = [
+    `${SUMMARY_LABELS.placesParkedThisRun}: 0`,
+    `${SUMMARY_LABELS.placesParked}: 0`,
+    `${SUMMARY_LABELS.placesReleased}: 0`,
+  ];
+
+  it('failedReport', () => {
+    const report = failedReport('some reason', 'atlantis', RUN_START);
+    const lines = report.summaryText.split('\n');
+    expect(lines.slice(-3)).toStrictEqual(zeroLines);
+    expect(hasWikimapiaLine(report.summaryText)).toBe(false);
+    for (const line of lines) expect(line).toMatch(LINE_PATTERN);
+  });
+
+  it('plannedReport, with and without parkedPlacesInRegion', () => {
+    const plan = planTiles(BELGRADE_SMALL_REGION);
+    for (const report of [plannedReport(plan, RUN_START), plannedReport(plan, RUN_START, 3)]) {
+      const lines = report.summaryText.split('\n');
+      expect(lines.slice(-3)).toStrictEqual(zeroLines);
+      expect(report.summary.counts).toStrictEqual(ZERO_RUN_COUNTS);
+      for (const line of lines) expect(line).toMatch(LINE_PATTERN);
+    }
   });
 });
 

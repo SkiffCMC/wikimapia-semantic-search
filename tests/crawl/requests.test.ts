@@ -22,6 +22,7 @@ import {
   type ClientFailure,
   type TransportResponse,
 } from '../../contracts/wikimapia-client.schema';
+import { keyQuotaAnswer, keyQuotaVariant } from '../../contracts/wikimapia-client.support';
 import {
   CrawlWikimapia,
   RUN_START,
@@ -210,7 +211,16 @@ describe('requestWithBackoff: failures without retry', () => {
       );
       expect(wikimapia.calls).toHaveLength(1);
       const direct = await directFailure(answerFor());
-      expect(result).toStrictEqual({ kind: 'item_failure', failureKind: kind, message: direct.message });
+      // crawl-run1-fixes AL4 0.1 "Item Failure messages", 1.4.3: a Wikimapia Error's message
+      // carries Wikimapia's (Client-redacted) text; other kinds keep the bare Client message.
+      const expected =
+        direct.kind === 'wikimapia_error'
+          ? `${direct.message}: ${direct.wikimapiaMessage}`
+          : direct.message;
+      expect(result).toStrictEqual({ kind: 'item_failure', failureKind: kind, message: expected });
+      if (kind === 'wikimapia_error') {
+        expect(expected).toBe('Wikimapia reported an error: Invalid API key.');
+      }
       expect(gateway.stopped).toBeUndefined();
     });
   }
@@ -230,7 +240,7 @@ describe('requestWithBackoff: failures without retry', () => {
     expect(gateway.stopped).toBeUndefined();
   });
 
-  it("uses only the Client's failure message, never wikimapiaMessage or issues", async () => {
+  it("a wikimapia_error message is the Client message plus wikimapiaMessage; issues never appear", async () => {
     const { gateway } = harness();
     const call: ClientCall<string> = () =>
       Promise.resolve({
@@ -245,9 +255,8 @@ describe('requestWithBackoff: failures without retry', () => {
     expect(result).toStrictEqual({
       kind: 'item_failure',
       failureKind: 'wikimapia_error',
-      message: 'Wikimapia answered with an error',
+      message: 'Wikimapia answered with an error: RAW-WIKIMAPIA-TEXT',
     });
-    expect(JSON.stringify(result)).not.toContain('RAW-WIKIMAPIA-TEXT');
 
     const unexpected: ClientCall<string> = () =>
       Promise.resolve({
@@ -263,6 +272,219 @@ describe('requestWithBackoff: failures without retry', () => {
       kind: 'item_failure',
       failureKind: 'unexpected_response',
       message: 'Unexpected Wikimapia response',
+    });
+    expect(JSON.stringify(second)).not.toContain('RAW-ISSUE');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wikimapia Error item messages (crawl-run1-fixes AL4 1.4.3; AC-22, AC-27)
+// ---------------------------------------------------------------------------
+
+function wikimapiaErrorCall(message: string, wikimapiaMessage: string): ClientCall<string> {
+  return () =>
+    Promise.resolve({ ok: false, failure: { kind: 'wikimapia_error', message, wikimapiaMessage } });
+}
+
+describe('requestWithBackoff: Wikimapia Error message rules', () => {
+  it('a multi-line, tab-separated wikimapiaMessage becomes one trimmed line with single spaces', async () => {
+    const { gateway } = harness();
+    const result = await requestWithBackoff(
+      gateway,
+      'details',
+      undefined,
+      wikimapiaErrorCall('Wikimapia reported an error', '  line one\n\tline two  \r\n  three\t '),
+    );
+    expect(result).toStrictEqual({
+      kind: 'item_failure',
+      failureKind: 'wikimapia_error',
+      message: 'Wikimapia reported an error: line one line two three',
+    });
+    expect(gateway.stopped).toBeUndefined();
+  });
+
+  for (const blank of ['', '   ', ' \t\n\r\n ']) {
+    it(`a blank wikimapiaMessage (${JSON.stringify(blank)}) gives exactly the bare Client message`, async () => {
+      const { gateway } = harness();
+      const result = await requestWithBackoff(
+        gateway,
+        'details',
+        undefined,
+        wikimapiaErrorCall('Wikimapia reported an error', blank),
+      );
+      expect(result).toStrictEqual({
+        kind: 'item_failure',
+        failureKind: 'wikimapia_error',
+        message: 'Wikimapia reported an error',
+      });
+      expect(gateway.stopped).toBeUndefined();
+    });
+  }
+
+  it('a Client-redacted text is copied as is', async () => {
+    const { gateway } = harness();
+    const result = await requestWithBackoff(
+      gateway,
+      'details',
+      undefined,
+      wikimapiaErrorCall('Wikimapia reported an error', 'Key [key removed] is not valid'),
+    );
+    expect(result).toStrictEqual({
+      kind: 'item_failure',
+      failureKind: 'wikimapia_error',
+      message: 'Wikimapia reported an error: Key [key removed] is not valid',
+    });
+    expect(gateway.stopped).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Key Quota Exhausted (crawl-run1-fixes AL4 1.4.3; AC-15 .. AC-20)
+// ---------------------------------------------------------------------------
+
+describe('requestWithBackoff: Key Quota Exhausted', () => {
+  it('listing: 1 call, no sleep, stopped quota_exhausted with the Client message and Wikimapia text', async () => {
+    const { client, gateway, wikimapia, clock } = harness({
+      minRequestIntervalSeconds: 0,
+      script: page1(keyQuotaAnswer(), pageAnswer(1)),
+    });
+    const result = await requestWithBackoff(gateway, 'listing', undefined, () =>
+      client.listPlaces({ bbox: SMALL_BBOX, page: 1 }),
+    );
+    expect(result).toStrictEqual({ kind: 'stopped' });
+    expect(wikimapia.calls).toHaveLength(1);
+    expect(clock.sleeps).toStrictEqual([]);
+    const direct = await directFailure(keyQuotaAnswer());
+    expect(direct.kind).toBe('key_quota_exhausted');
+    expect(gateway.stopped).toStrictEqual({
+      reason: 'quota_exhausted',
+      message: direct.message,
+      wikimapiaMessage: 'Key limit has been reached',
+    });
+    expect(gateway.stopped?.message).toContain('Key limit has been reached');
+    expect(gateway.stopped?.message).not.toContain(TEST_API_KEY);
+    expect(JSON.stringify(gateway.stopped)).not.toContain(TEST_API_KEY);
+    expect(gateway.counts().listingRequests).toBe(1);
+    expect(gateway.counts().rateLimitWaits).toBe(0);
+  });
+
+  it('details: 1 call, no sleep, stopped quota_exhausted, counted as a details request', async () => {
+    const { client, gateway, wikimapia, clock } = harness({
+      minRequestIntervalSeconds: 0,
+      script: { details: { 62587: [keyQuotaAnswer(), detailsAnswer('getbyid-62587.json')] } },
+    });
+    const result = await requestWithBackoff(gateway, 'details', undefined, () =>
+      client.getPlaceDetails({ placeId: 62587 }),
+    );
+    expect(result).toStrictEqual({ kind: 'stopped' });
+    expect(wikimapia.calls).toHaveLength(1);
+    expect(clock.sleeps).toStrictEqual([]);
+    const direct = await directFailure(keyQuotaAnswer());
+    expect(gateway.stopped).toStrictEqual({
+      reason: 'quota_exhausted',
+      message: direct.message,
+      wikimapiaMessage: 'Key limit has been reached',
+    });
+    expect(gateway.counts().detailsRequests).toBe(1);
+    expect(gateway.counts().listingRequests).toBe(0);
+  });
+
+  it('a Key Quota answer to the second Connection Failure try: 2 calls, one 30 s wait, no third call (AC-20)', async () => {
+    const { client, gateway, wikimapia, clock } = harness({
+      minRequestIntervalSeconds: 0,
+      script: page1(UNREACHABLE, keyQuotaAnswer(), pageAnswer(1)),
+    });
+    const result = await requestWithBackoff(gateway, 'listing', undefined, () =>
+      client.listPlaces({ bbox: SMALL_BBOX, page: 1 }),
+    );
+    expect(result).toStrictEqual({ kind: 'stopped' });
+    expect(wikimapia.calls).toHaveLength(2);
+    expect(clock.sleeps.map((s) => s.ms)).toStrictEqual([30 * SECOND]);
+    expect(at(wikimapia.startTimes, 1) - at(wikimapia.startTimes, 0)).toBe(30 * SECOND);
+    expect(gateway.stopped?.reason).toBe('quota_exhausted');
+    expect(gateway.stopped?.wikimapiaMessage).toBe('Key limit has been reached');
+  });
+
+  it("a Key Quota answer after a Rate-Limit Response (the Client's own retry): 2 calls in the kind", async () => {
+    const { client, gateway, wikimapia } = harness({
+      minRequestIntervalSeconds: 0,
+      script: {
+        details: { 62587: [rateLimitAnswer(1), keyQuotaAnswer(), detailsAnswer('getbyid-62587.json')] },
+      },
+    });
+    const result = await requestWithBackoff(gateway, 'details', undefined, () =>
+      client.getPlaceDetails({ placeId: 62587 }),
+    );
+    expect(result).toStrictEqual({ kind: 'stopped' });
+    expect(wikimapia.calls).toHaveLength(2);
+    expect(gateway.counts().detailsRequests).toBe(2);
+    expect(gateway.counts().listingRequests).toBe(0);
+    expect(gateway.requestsSent).toBe(2);
+    expect(gateway.stopped?.reason).toBe('quota_exhausted');
+    expect(gateway.stopped?.wikimapiaMessage).toBe('Key limit has been reached');
+  });
+
+  it('an already stopped Gateway that receives a Key Quota failure keeps the first stop', async () => {
+    const { gateway } = harness();
+    gateway.stop('budget_reached', 'Request Budget of 3 used up.');
+    const call: ClientCall<string> = () =>
+      Promise.resolve({
+        ok: false,
+        failure: {
+          kind: 'key_quota_exhausted',
+          message: 'Wikimapia key quota exhausted (code 1004): Key limit has been reached',
+          wikimapiaMessage: 'Key limit has been reached',
+          code: 1004,
+        },
+      });
+    const result = await requestWithBackoff(gateway, 'listing', undefined, call);
+    expect(result).toStrictEqual({ kind: 'stopped' });
+    expect(gateway.stopped).toStrictEqual({
+      reason: 'budget_reached',
+      message: 'Request Budget of 3 used up.',
+    });
+  });
+
+  it("a blank recorded wikimapiaMessage still stops quota_exhausted with '' and the bare Client message", async () => {
+    const blank = keyQuotaVariant({ message: '' });
+    const { client, gateway, wikimapia } = harness({ script: page1(blank) });
+    const result = await requestWithBackoff(gateway, 'listing', undefined, () =>
+      client.listPlaces({ bbox: SMALL_BBOX, page: 1 }),
+    );
+    expect(result).toStrictEqual({ kind: 'stopped' });
+    expect(wikimapia.calls).toHaveLength(1);
+    const direct = await directFailure(keyQuotaVariant({ message: '' }));
+    expect(direct.kind).toBe('key_quota_exhausted');
+    expect(gateway.stopped).toStrictEqual({
+      reason: 'quota_exhausted',
+      message: direct.message,
+      wikimapiaMessage: '',
+    });
+  });
+
+  it("a literal Key Quota failure with an empty wikimapiaMessage stops with '' kept", async () => {
+    const { gateway, clock } = harness();
+    let calls = 0;
+    const call: ClientCall<string> = () => {
+      calls += 1;
+      return Promise.resolve({
+        ok: false,
+        failure: {
+          kind: 'key_quota_exhausted',
+          message: 'Wikimapia key quota exhausted (code 1004)',
+          wikimapiaMessage: '',
+          code: 1004,
+        },
+      });
+    };
+    const result = await requestWithBackoff(gateway, 'listing', undefined, call);
+    expect(result).toStrictEqual({ kind: 'stopped' });
+    expect(calls).toBe(1);
+    expect(clock.sleeps).toStrictEqual([]);
+    expect(gateway.stopped).toStrictEqual({
+      reason: 'quota_exhausted',
+      message: 'Wikimapia key quota exhausted (code 1004)',
+      wikimapiaMessage: '',
     });
   });
 });

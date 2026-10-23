@@ -17,6 +17,18 @@
  * `storeResultSchema(...)` around a test-local value schema of the AL4 1.3 types, every report
  * with `SaveReportSchema`, every view with `CrawlProgressViewSchema`. Every repository, store
  * and setup is closed in `afterEach`/`afterAll`.
+ *
+ * Extended by feature `crawl-run1-fixes` (AL4 crawl-run1-fixes 1.3, 1.4.8; AL3 routing
+ * 20261022-crawl-run1-fixes-03-failure-records, section 2.1 B): `recordItemFailure` joins the
+ * guards of section F and the Run-wide write numbering of section E (E.5).
+ *
+ * Extended by feature `crawl-run1-fixes` (AL4 crawl-run1-fixes 1.3, 1.4.5 .. 1.4.7; AL3 routing
+ * 20261022-crawl-run1-fixes-04-parking, section 2.1 D): every `beginRun` input carries
+ * `retryParked: false` and every started value `placesReleased: 0`; `recordItemFailure` may
+ * carry `parked`; `listParkedPlaces` and `regionTotals` join the guards of section F; the due
+ * count moves from `countPlacesDue` to `regionTotals` (F.3 .. F.5). The `countPlacesDue` adapter
+ * stayed in `everyCall` until U6; U6 removed it (AL3 routing 20261022-crawl-run1-fixes-06-run,
+ * section 2.1 H).
  */
 import { z } from 'zod';
 import { openCrawlRepository } from '../../src/db/crawl-repository';
@@ -55,6 +67,7 @@ import {
   CrawlProgressResultSchema,
   CrawlProgressViewSchema,
   DuePlaceSchema,
+  ItemFailureKindSchema,
   MomentSchema,
   RunCountsSchema,
   RunIdSchema,
@@ -78,6 +91,7 @@ import {
   summaryOf,
 } from '../../contracts/storage.support';
 import type { ListingPage } from '../../contracts/wikimapia-client.schema';
+import type { FailureRecord } from '../../contracts/crawl-run1-fixes.schema';
 
 const NOT_CONFIGURED_MESSAGE =
   'Place Store is not configured: connection string is missing or unusable';
@@ -145,6 +159,7 @@ const BeginRunValueSchema = z.discriminatedUnion('kind', [
     runId: RunIdSchema,
     pass: PassStateSchema.optional(),
     abandonedRunIds: z.array(RunIdSchema),
+    placesReleased: z.number().int().nonnegative(),
   }),
   z.strictObject({
     kind: z.literal('run_in_progress'),
@@ -166,7 +181,24 @@ const ListingStepResultSchema = storeResultSchema(ListingStepValueSchema);
 const RenewResultSchema = storeResultSchema(z.strictObject({ alive: z.boolean() }));
 const FinishResultSchema = storeResultSchema(z.strictObject({ updated: z.boolean() }));
 const DueListResultSchema = storeResultSchema(z.array(DuePlaceSchema));
-const DueCountResultSchema = storeResultSchema(z.number().int().nonnegative());
+const ParkedPlaceSchema = z.strictObject({
+  placeId: z.number().int().positive(),
+  failureKind: ItemFailureKindSchema,
+});
+/** `FailureStepValue` (AL4 1.3): `parked` only for a Place that is Parked after the record. */
+const FailureStepResultSchema = storeResultSchema(
+  z.discriminatedUnion('kind', [
+    z.strictObject({ kind: z.literal('recorded'), parked: ParkedPlaceSchema.optional() }),
+    z.strictObject({ kind: z.literal('taken_over') }),
+  ]),
+);
+const ParkedListResultSchema = storeResultSchema(z.array(ParkedPlaceSchema));
+const RegionTotalsResultSchema = storeResultSchema(
+  z.strictObject({
+    placesDue: z.number().int().nonnegative(),
+    placesParked: z.number().int().nonnegative(),
+  }),
+);
 
 type Parsed<T> = { ok: true; value: T } | { ok: false; failure: StoreFailure };
 
@@ -262,6 +294,7 @@ function beginInput(overrides: Partial<BeginRunInput> = {}): BeginRunInput {
     startedAt: RUN_START,
     abandonBefore: abandonBeforeFor(RUN_START),
     counts: ZERO_RUN_COUNTS,
+    retryParked: false,
     ...overrides,
   };
 }
@@ -274,8 +307,10 @@ async function begin(repo: CrawlRepository, overrides: Partial<BeginRunInput> = 
   return okValue(await beginResult(repo, beginInput(overrides)));
 }
 
+/** Every start in this file is without `retryParked`, so it releases nothing. */
 function started(value: BeginRunParsed): Started {
   if (value.kind !== 'started') throw new Error(`expected started, got ${value.kind}`);
+  expect(value.placesReleased).toBe(0);
   return value;
 }
 
@@ -309,6 +344,20 @@ async function recordSaved(repo: CrawlRepository, input: ListingStepInput): Prom
   const value = okValue(await recordResult(repo, input));
   if (value.kind !== 'saved') throw new Error(`expected saved, got ${value.kind}`);
   return SaveReportSchema.parse(value.report);
+}
+
+function failureRecordFor(runId: number, failedAt: Moment = plusSeconds(RUN_START, 15)): FailureRecord {
+  return {
+    runId,
+    item: { kind: 'place_details', placeId: 900 },
+    failureKind: 'wikimapia_error',
+    message: 'Place 900: Wikimapia error: synthetic failure',
+    failedAt,
+  };
+}
+
+async function failureResult(repo: CrawlRepository, record: FailureRecord) {
+  return FailureStepResultSchema.parse(await settle(repo.recordItemFailure(record)));
 }
 
 async function renewResult(repo: CrawlRepository, input: RenewInput) {
@@ -400,6 +449,7 @@ describe('A. beginRun', () => {
       lastFinishedPage: [],
     });
     expect(run.abandonedRunIds).toStrictEqual([]);
+    expect(run.placesReleased).toBe(0);
 
     const view = await progress();
     expect(view.runs).toStrictEqual([
@@ -457,6 +507,7 @@ describe('A. beginRun', () => {
     );
     expect(second.runId).not.toBe(first.runId);
     expect(second.abandonedRunIds).toStrictEqual([first.runId]);
+    expect(second.placesReleased).toBe(0);
     expect(second.pass).toStrictEqual({
       passNumber: 1,
       tileCount: 1,
@@ -1090,6 +1141,28 @@ describe('E. write hook', () => {
     expect(record.endedAt).toBeUndefined();
   });
 
+  it('E.5 beginRun then recordItemFailure numbers the hook calls continuously (the record is the next number)', async () => {
+    const rec = recorder();
+    const repo = openRepo(rec.hook);
+    const run = await startRun(repo);
+    const afterBegin = rec.numbers.length;
+    expect(afterBegin).toBe(2);
+
+    expect(await failureResult(repo, failureRecordFor(run.runId))).toStrictEqual({
+      ok: true,
+      value: { kind: 'recorded' },
+    });
+    expect(rec.numbers).toStrictEqual(oneTo(afterBegin + 1));
+
+    await recordSaved(repo, pageInput(run.runId, await emptyPage(), { short: true }));
+    const afterListing = rec.numbers.length;
+    expect(await failureResult(repo, failureRecordFor(run.runId, plusSeconds(RUN_START, 25)))).toStrictEqual({
+      ok: true,
+      value: { kind: 'recorded' },
+    });
+    expect(rec.numbers).toStrictEqual(oneTo(afterListing + 1));
+  });
+
   describe('E.4 the hook is called only for writes', () => {
     it('a refused start (run_in_progress) calls it zero times', async () => {
       await startRun(openRepo());
@@ -1146,9 +1219,14 @@ async function everyCall(
       await renewResult(repo, { runId: 1, at: RUN_START, counts: ZERO_RUN_COUNTS }),
     ],
     ['recordListingPage', await recordResult(repo, pageInput(1, listing))],
+    ['recordItemFailure', await failureResult(repo, failureRecordFor(1))],
     ['saveDetails', SaveResultSchema.parse(await settle(repo.saveDetails(details)))],
     ['listPlacesDue', DueListResultSchema.parse(await settle(repo.listPlacesDue(due)))],
-    ['countPlacesDue', DueCountResultSchema.parse(await settle(repo.countPlacesDue(due)))],
+    [
+      'listParkedPlaces',
+      ParkedListResultSchema.parse(await settle(repo.listParkedPlaces({ bbox: SMALL_BBOX }))),
+    ],
+    ['regionTotals', RegionTotalsResultSchema.parse(await settle(repo.regionTotals(due)))],
     [
       'finishRun',
       await finishResult(repo, {
@@ -1165,7 +1243,7 @@ describe('F. repository guards', () => {
   it('F.1 a not-configured repository resolves store_unavailable for every method; close resolves twice', async () => {
     const repo = openRepo(undefined, '');
     const results = await everyCall(repo);
-    expect(results.map(([name]) => name)).toHaveLength(7);
+    expect(results.map(([name]) => name)).toHaveLength(9);
     for (const [name, result] of results) {
       expect({ name, failure: failureOf(result) }).toStrictEqual({
         name,
@@ -1181,7 +1259,7 @@ describe('F. repository guards', () => {
     async () => {
       const repo = openRepo(undefined, UNREACHABLE_DATABASE_URL);
       const results = await everyCall(repo);
-      expect(results).toHaveLength(7);
+      expect(results).toHaveLength(9);
       for (const [name, result] of results) {
         const failure = failureOf(result);
         expect({ name, kind: failure.kind }).toStrictEqual({ name, kind: 'store_unavailable' });
@@ -1208,7 +1286,7 @@ describe('F. repository guards', () => {
           failureOf(DueListResultSchema.parse(await settle(repo.listPlacesDue(badDue)))),
         );
         InvalidDataFailureSchema.parse(
-          failureOf(DueCountResultSchema.parse(await settle(repo.countPlacesDue(badDue)))),
+          failureOf(RegionTotalsResultSchema.parse(await settle(repo.regionTotals(badDue)))),
         );
       }
       expect(SaveResultSchema.parse(await real.saveDetails(badDetails))).toStrictEqual(
@@ -1217,15 +1295,45 @@ describe('F. repository guards', () => {
       expect(DueListResultSchema.parse(await real.listPlacesDue(badDue))).toStrictEqual(
         DueListResultSchema.parse(await unreachable.listPlacesDue(badDue)),
       );
-      expect(DueCountResultSchema.parse(await real.countPlacesDue(badDue))).toStrictEqual(
-        DueCountResultSchema.parse(await unreachable.countPlacesDue(badDue)),
+      expect(RegionTotalsResultSchema.parse(await real.regionTotals(badDue))).toStrictEqual(
+        RegionTotalsResultSchema.parse(await unreachable.regionTotals(badDue)),
       );
       expect((await counts()).places).toBe(0);
     },
     UNREACHABLE_TIMEOUT_MS,
   );
 
-  it('F.4 listPlacesDue honours limit and countPlacesDue agrees with the unlimited list', async () => {
+  it(
+    'F.3b an invalid regionTotals input (bad bbox, sub-second dueBefore) is invalid_data without database access, like listPlacesDue',
+    async () => {
+      const real = openRepo();
+      const unreachable = openRepo(undefined, UNREACHABLE_DATABASE_URL);
+      const reversed = {
+        west: SMALL_BBOX.east,
+        south: SMALL_BBOX.south,
+        east: SMALL_BBOX.west,
+        north: SMALL_BBOX.north,
+      };
+      const badInputs = [
+        { bbox: reversed, dueBefore: RUN_START },
+        { bbox: { ...SMALL_BBOX, north: 91 }, dueBefore: RUN_START },
+        { bbox: SMALL_BBOX, dueBefore: '2026-10-22T09:00:00.500Z' },
+      ];
+      for (const bad of badInputs) {
+        const onReal = RegionTotalsResultSchema.parse(await settle(real.regionTotals(bad)));
+        const onUnreachable = RegionTotalsResultSchema.parse(
+          await settle(unreachable.regionTotals(bad)),
+        );
+        InvalidDataFailureSchema.parse(failureOf(onReal));
+        expect(onUnreachable).toStrictEqual(onReal);
+        const listed = DueListResultSchema.parse(await settle(unreachable.listPlacesDue(bad)));
+        expect(failureOf(listed).kind).toBe('invalid_data');
+      }
+    },
+    UNREACHABLE_TIMEOUT_MS,
+  );
+
+  it('F.4 listPlacesDue honours limit and regionTotals agrees with the unlimited list', async () => {
     const repo = openRepo();
     const run = await startRun(repo);
     const belgrade = await belgradePage();
@@ -1245,8 +1353,53 @@ describe('F. repository guards', () => {
     );
     expect(limited).toHaveLength(1);
     expect(limited).toStrictEqual(all.slice(0, 1));
-    const count = okValue(DueCountResultSchema.parse(await settle(repo.countPlacesDue(query))));
-    expect(count).toBe(all.length);
+    const totals = okValue(RegionTotalsResultSchema.parse(await settle(repo.regionTotals(query))));
+    expect(totals).toStrictEqual({ placesDue: all.length, placesParked: 0 });
+    expect(okValue(ParkedListResultSchema.parse(await settle(repo.listParkedPlaces({ bbox: SMALL_BBOX }))))).toStrictEqual([]);
+  });
+
+  it('F.5 a Parked Place of the bbox: listPlacesDue omits it, regionTotals counts it as parked, listParkedPlaces returns it', async () => {
+    const repo = openRepo();
+    const run = await startRun(repo);
+    const belgrade = await belgradePage();
+    const ids = belgrade.places.map((p) => p.placeId);
+    await recordSaved(repo, pageInput(run.runId, belgrade, { short: true }));
+    const query = { bbox: SMALL_BBOX, dueBefore: plusSeconds(RUN_START, 60) };
+
+    const before = okValue(DueListResultSchema.parse(await settle(repo.listPlacesDue(query))));
+    expect(before.map((p) => p.placeId).sort((a, b) => a - b)).toStrictEqual(
+      [...ids].sort((a, b) => a - b),
+    );
+    const totalsBefore = okValue(
+      RegionTotalsResultSchema.parse(await settle(repo.regionTotals(query))),
+    );
+    expect(totalsBefore).toStrictEqual({ placesDue: before.length, placesParked: 0 });
+
+    const parkedId = at(before, 0).placeId;
+    for (const s of [20, 25, 30]) {
+      const value = okValue(
+        await failureResult(repo, {
+          ...failureRecordFor(run.runId, plusSeconds(RUN_START, s)),
+          item: { kind: 'place_details', placeId: parkedId },
+        }),
+      );
+      expect(value.kind).toBe('recorded');
+    }
+
+    const after = okValue(DueListResultSchema.parse(await settle(repo.listPlacesDue(query))));
+    expect(after).toStrictEqual(before.filter((p) => p.placeId !== parkedId));
+    expect(
+      okValue(DueListResultSchema.parse(await settle(repo.listPlacesDue({ ...query, limit: 1 })))),
+    ).toStrictEqual(after.slice(0, 1));
+    const totalsAfter = okValue(RegionTotalsResultSchema.parse(await settle(repo.regionTotals(query))));
+    expect(totalsAfter).toStrictEqual({
+      placesDue: totalsBefore.placesDue - 1,
+      placesParked: 1,
+    });
+    expect(totalsAfter.placesDue).toBe(after.length);
+    expect(
+      okValue(ParkedListResultSchema.parse(await settle(repo.listParkedPlaces({ bbox: SMALL_BBOX })))),
+    ).toStrictEqual([{ placeId: parkedId, failureKind: 'wikimapia_error' }]);
   });
 });
 

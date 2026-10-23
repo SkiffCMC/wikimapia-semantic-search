@@ -21,6 +21,7 @@ import {
   FailureIssueSchema,
   ListingPageSchema,
   PlaceDetailsSchema,
+  RawDebugResponseSchema,
   type FailureIssue,
 } from '../../contracts/wikimapia-client.schema';
 import {
@@ -29,6 +30,7 @@ import {
   addCommenterIps,
   at,
   fixtureText,
+  keyQuotaVariant,
   rateLimitAnswer,
   rawBox,
   rawDetails,
@@ -507,5 +509,196 @@ describe('interpretAnswer with a synthetic schema and stub normaliser (AL4 1.3, 
     const stub = okStub();
     expect(interpretAnswer('{"n":', SyntheticSchema, stub)).toStrictEqual(NOT_JSON);
     expect(stub).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13. Key Quota (crawl-run1-fixes AL4 1.4.2; AC-12, AC-13)
+// ---------------------------------------------------------------------------
+
+const KEY_QUOTA_MESSAGE = 'Key limit has been reached';
+const RATE_LIMIT_WORDING =
+  'You have reached the limit for this action. You need to wait for 7 seconds.';
+
+/** The Key Quota fixture with `debug.code` replaced by `code` (a number or a text). */
+function keyQuotaWithCode(code: number | string): string {
+  const body = RawDebugResponseSchema.parse(JSON.parse(fixtureText('debug-key-quota.json')));
+  body.debug.code = code;
+  return JSON.stringify(body);
+}
+
+describe('Key Quota answers (crawl-run1-fixes AL4 1.4.2, AC-12)', () => {
+  it.each(BOTH)(
+    '%s: debug-key-quota.json gives exactly key_quota with the message',
+    (_, interpret) => {
+      expect(interpret(fixtureText('debug-key-quota.json'))).toStrictEqual({
+        kind: 'key_quota',
+        message: KEY_QUOTA_MESSAGE,
+      });
+    },
+  );
+
+  it.each(BOTH)('%s: code 1004 as the text "1004" also gives key_quota', (_, interpret) => {
+    const body = keyQuotaWithCode('1004');
+    expect(body).toContain('"code":"1004"');
+    expect(interpret(body)).toStrictEqual({ kind: 'key_quota', message: KEY_QUOTA_MESSAGE });
+  });
+
+  it.each(BOTH)(
+    '%s: code 1004 with an empty message gives key_quota with message ""',
+    (_, interpret) => {
+      expect(interpret(keyQuotaVariant({ message: '' }).body)).toStrictEqual({
+        kind: 'key_quota',
+        message: '',
+      });
+    },
+  );
+
+  it.each(BOTH)(
+    '%s: code 1004 with the rate-limit wording gives key_quota with that message (code wins)',
+    (_, interpret) => {
+      expect(interpret(keyQuotaVariant({ message: RATE_LIMIT_WORDING }).body)).toStrictEqual({
+        kind: 'key_quota',
+        message: RATE_LIMIT_WORDING,
+      });
+    },
+  );
+
+  it.each(BOTH)(
+    '%s: a message containing the key is returned verbatim (redaction is not interpret)',
+    (_, interpret) => {
+      const message = `Key ${TEST_API_KEY} limit has been reached`;
+      expect(interpret(keyQuotaVariant({ message }).body)).toStrictEqual({
+        kind: 'key_quota',
+        message,
+      });
+    },
+  );
+
+  it('debug code 1004 next to a valid details object gives key_quota, not data', () => {
+    const body = JSON.stringify({
+      ...rawDetails('getbyid-62587.json'),
+      debug: { code: 1004, message: KEY_QUOTA_MESSAGE },
+    });
+    expect(interpretPlaceDetailsAnswer(body)).toStrictEqual({
+      kind: 'key_quota',
+      message: KEY_QUOTA_MESSAGE,
+    });
+  });
+
+  it('interpretAnswer does not call the normaliser for a Key Quota answer', () => {
+    const SyntheticSchema = z.looseObject({ n: z.number().int() });
+    const stub = vi.fn(
+      (raw: z.output<typeof SyntheticSchema>): Normalized<number> => ({ ok: true, value: raw.n }),
+    );
+    const body = JSON.stringify({ n: 3, debug: { code: 1004, message: KEY_QUOTA_MESSAGE } });
+    expect(interpretAnswer(body, SyntheticSchema, stub)).toStrictEqual({
+      kind: 'key_quota',
+      message: KEY_QUOTA_MESSAGE,
+    });
+    expect(stub).not.toHaveBeenCalled();
+  });
+});
+
+describe('other debug answers unchanged (crawl-run1-fixes AL4 1.4.2, AC-13)', () => {
+  it.each(BOTH)(
+    '%s: the Key Quota fixture with code 1003 gives wikimapia_error',
+    (_, interpret) => {
+      expect(interpret(keyQuotaVariant({ code: 1003 }).body)).toStrictEqual({
+        kind: 'wikimapia_error',
+        message: KEY_QUOTA_MESSAGE,
+      });
+    },
+  );
+
+  it.each(BOTH)(
+    '%s: the Key Quota fixture without its code gives wikimapia_error',
+    (_, interpret) => {
+      const body = keyQuotaVariant({ code: null }).body;
+      expect(body).not.toContain('code');
+      expect(interpret(body)).toStrictEqual({
+        kind: 'wikimapia_error',
+        message: KEY_QUOTA_MESSAGE,
+      });
+    },
+  );
+
+  it.each(BOTH)('%s: code "1003" as text gives wikimapia_error', (_, interpret) => {
+    expect(interpret(keyQuotaWithCode('1003'))).toStrictEqual({
+      kind: 'wikimapia_error',
+      message: KEY_QUOTA_MESSAGE,
+    });
+  });
+
+  it.each(BOTH)(
+    '%s: debug-rate-limit.json still gives rate_limit with 7 seconds',
+    (_, interpret) => {
+      expect(interpret(fixtureText('debug-rate-limit.json'))).toStrictEqual({
+        kind: 'rate_limit',
+        waitSeconds: 7,
+      });
+    },
+  );
+
+  it.each(BOTH)('%s: debug-error.json still gives wikimapia_error', (_, interpret) => {
+    expect(interpret(fixtureText('debug-error.json'))).toStrictEqual({
+      kind: 'wikimapia_error',
+      message: 'Invalid API key.',
+    });
+  });
+
+  it.each(BOTH)(
+    '%s: an unreadable wait with another code gives rate_limit with the waitSeconds key present',
+    (_, interpret) => {
+      const body = JSON.stringify({
+        debug: { code: 1003, message: 'You need to wait for a few seconds.' },
+      });
+      const result = interpret(body);
+      expect(result.kind).toBe('rate_limit');
+      expect(keys(result)).toStrictEqual(['kind', 'waitSeconds']);
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// 14. Places without Tags (crawl-run1-fixes AL4 1.4.1; AC-1 .. AC-5)
+// ---------------------------------------------------------------------------
+
+describe('Places without Tags through interpretPlaceDetailsAnswer (crawl-run1-fixes AL4 1.4.1)', () => {
+  it.each([['getbyid-1391132-no-tags.json'], ['getbyid-8918979-no-tags.json']] as const)(
+    '%s gives data with tags [] and no wikipediaUrl',
+    (name: FixtureName) => {
+      const value = dataValue(interpretPlaceDetailsAnswer(fixtureText(name)));
+      expect(value.tags).toStrictEqual([]);
+      expect(value).not.toHaveProperty('wikipediaUrl');
+      expect(PlaceDetailsSchema.safeParse(value).success).toBe(true);
+    },
+  );
+
+  it('8918979 with tags null gives the same data as without tags', () => {
+    const missing = dataValue(
+      interpretPlaceDetailsAnswer(fixtureText('getbyid-8918979-no-tags.json')),
+    );
+    const body = JSON.stringify({ ...rawDetails('getbyid-8918979-no-tags.json'), tags: null });
+    expect(dataValue(interpretPlaceDetailsAnswer(body))).toStrictEqual(missing);
+  });
+
+  it.each([
+    ['text', 'no tags'],
+    ['a number', 5],
+    ['a Tag without a title', [{ id: 1 }]],
+    ['a Tag with a non-whole id', [{ id: 1.5, title: 'x' }]],
+  ])('Tags as %s: unexpected with an issue path starting at tags (AC-4)', (_, tags) => {
+    const body = JSON.stringify({ ...rawDetails('getbyid-8918979-no-tags.json'), tags });
+    const issues = unexpectedIssues(interpretPlaceDetailsAnswer(body));
+    expect(issues.some((issue) => issue.path[0] === 'tags')).toBe(true);
+  });
+
+  it('1391132 without its title names ["title"] and nothing about tags (AC-5)', () => {
+    const raw = rawDetails('getbyid-1391132-no-tags.json');
+    Reflect.deleteProperty(raw, 'title');
+    const issues = unexpectedIssues(interpretPlaceDetailsAnswer(JSON.stringify(raw)));
+    expect(hasIssueAt(issues, ['title'])).toBe(true);
+    expect(issues.some((issue) => issue.path[0] === 'tags')).toBe(false);
   });
 });

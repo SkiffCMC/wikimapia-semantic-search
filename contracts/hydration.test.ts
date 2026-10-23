@@ -1940,26 +1940,30 @@ describe('AC-56 Step can be undone', () => {
     okValue(SchemaStepsResultSchema.parse(await setup.apply()));
   });
 
+  // Amended by crawl-run1-fixes AC-41: that feature adds a newer step (Failure Records and
+  // Explicit Retries), so the Crawl Progress step is reached by undoing newest-first, one step at
+  // a time, until the Crawl Progress storage is gone.
   it('undoing it removes the Crawl Progress storage only; applying it again succeeds', async () => {
     await seedDetails(await clientDetails('getbyid-62587.json'), '2026-10-21T10:00:00Z');
     const before = { counts: await counts(), place: await read(62587) };
     const applied = (await inspect()).appliedSteps;
-    const newest = at(applied, applied.length - 1);
-
-    expect(okValue(SchemaStepsResultSchema.parse(await setup.undoLast())).steps).toStrictEqual([
-      newest,
-    ]);
+    const undone: string[] = [];
+    while (crawlTables(await inspect()).length > 0 && undone.length < applied.length) {
+      const steps = okValue(SchemaStepsResultSchema.parse(await setup.undoLast())).steps;
+      expect(steps).toStrictEqual([at(applied, applied.length - 1 - undone.length)]);
+      undone.push(...steps);
+    }
     const after = await inspect();
-    expect(after.appliedSteps).toStrictEqual(applied.slice(0, -1));
+    expect(after.appliedSteps).toStrictEqual(applied.slice(0, applied.length - undone.length));
     expect(crawlTables(after)).toStrictEqual([]);
     for (const table of Object.values(STORE_TABLES)) {
       expect(after.tables.map((t) => t.name)).toContain(table);
     }
     expect({ counts: await counts(), place: await read(62587) }).toStrictEqual(before);
 
-    expect(okValue(SchemaStepsResultSchema.parse(await setup.apply())).steps).toStrictEqual([
-      newest,
-    ]);
+    expect(okValue(SchemaStepsResultSchema.parse(await setup.apply())).steps).toStrictEqual(
+      [...undone].reverse(),
+    );
     expect(crawlTables(await inspect()).length).toBeGreaterThan(0);
     expect(await progress(REGION_T1.name)).toStrictEqual({
       regionName: REGION_T1.name,

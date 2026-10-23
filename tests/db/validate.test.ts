@@ -7,10 +7,16 @@
  * (AC-15, AC-38, AC-39, AC-51, AC-53 .. AC-55).
  * Extended by feature `hydration` (AL3 routing 20261022-hydration-03-store-read, 2.1 C):
  * `validatePlacesDueInput` and `validateCrawlProgressInput` (section 8).
+ * Extended by feature `crawl-run1-fixes` (AL4 crawl-run1-fixes 1.3, 1.4.8; AL3 routing
+ * 20261022-crawl-run1-fixes-03-failure-records, 2.1 D): `validateFailureRecord`,
+ * `validateFailureRecordsInput` and `validateExplicitRetriesInput` (section 9).
  */
 import {
   validateCrawlProgressInput,
   validateDetailsInput,
+  validateExplicitRetriesInput,
+  validateFailureRecord,
+  validateFailureRecordsInput,
   validateListingInput,
   validatePlaceRef,
   validatePlacesDueInput,
@@ -40,6 +46,12 @@ import {
 } from '../../contracts/storage.support';
 import { SYNTHETIC_IPS } from '../../contracts/wikimapia-client.support';
 import { RUN_START, SMALL_BBOX } from '../../contracts/hydration.support';
+import {
+  ExplicitRetriesInputSchema,
+  FailureRecordSchema,
+  FailureRecordsInputSchema,
+  type FailureRecord,
+} from '../../contracts/crawl-run1-fixes.schema';
 
 type AnyResult = { ok: true; value: unknown } | { ok: false; failure: StoreFailure };
 type Path = (string | number)[];
@@ -595,5 +607,204 @@ describe('crawl input validators robustness', () => {
     const failure = invalidOf(result);
     expect(failure.issues.length).toBeGreaterThanOrEqual(1);
     expect(JSON.stringify(failure)).not.toContain('blew up');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. validateFailureRecord / validateFailureRecordsInput / validateExplicitRetriesInput
+//    (feature `crawl-run1-fixes`; AL4 crawl-run1-fixes 1.3, 1.4.8; AL3 routing
+//    20261022-crawl-run1-fixes-03-failure-records, section 2.1 D)
+// ---------------------------------------------------------------------------
+
+const VALID_PLACE_RECORD: FailureRecord = {
+  runId: 7,
+  item: { kind: 'place_details', placeId: 900 },
+  failureKind: 'wikimapia_error',
+  message: 'Place 900: Wikimapia error: synthetic failure',
+  failedAt: '2026-10-22T10:00:00Z',
+};
+
+const VALID_LISTING_RECORD: FailureRecord = {
+  runId: 7,
+  item: { kind: 'listing_page', tileNumber: 3, page: 2 },
+  failureKind: 'connection',
+  message: 'Tile 3 page 2: connection failure: synthetic',
+  failedAt: '2026-10-22T10:00:05Z',
+};
+
+/** Distinct values that must never appear in a failure. */
+const SECRET_EXTRA = 'synthetic-extra-value';
+const SUB_SECOND = '2026-10-22T10:00:00.500Z';
+
+const NOT_OBJECTS: [string, unknown][] = [
+  ['null', null],
+  ['undefined', undefined],
+  ['a string', 'synthetic-string-input'],
+  ['an array', [VALID_PLACE_RECORD]],
+  ['a number', 42],
+];
+
+function expectNoThrow(validate: (input: unknown) => AnyResult, input: unknown): AnyResult {
+  let result: AnyResult | undefined;
+  expect(() => {
+    result = validate(input);
+  }).not.toThrow();
+  if (result === undefined) throw new Error('no result');
+  return result;
+}
+
+describe('validateFailureRecord', () => {
+  it.each([
+    ['a Place record', VALID_PLACE_RECORD],
+    ['a listing record', VALID_LISTING_RECORD],
+  ])('%s is ok with a value equal to the parsed input', (_label, input) => {
+    expect(validateFailureRecord(input)).toStrictEqual({
+      ok: true,
+      value: FailureRecordSchema.parse(input),
+    });
+  });
+
+  it('the value is a fresh object', () => {
+    const input = { ...VALID_PLACE_RECORD, item: { ...VALID_PLACE_RECORD.item } };
+    const result = validateFailureRecord(input);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.value).not.toBe(input);
+    expect(result.value).toStrictEqual(VALID_PLACE_RECORD);
+  });
+
+  const invalid: [string, unknown, Path][] = [
+    ['an empty message', { ...VALID_PLACE_RECORD, message: '' }, ['message']],
+    ['a sub-second failedAt', { ...VALID_PLACE_RECORD, failedAt: SUB_SECOND }, ['failedAt']],
+    ['failedAt not a moment', { ...VALID_PLACE_RECORD, failedAt: 'yesterday' }, ['failedAt']],
+    [
+      'failureKind key_quota_exhausted',
+      { ...VALID_PLACE_RECORD, failureKind: 'key_quota_exhausted' },
+      ['failureKind'],
+    ],
+    ['an extra key', { ...VALID_PLACE_RECORD, extra: SECRET_EXTRA }, []],
+    [
+      'an item with both shapes\u2019 keys',
+      { ...VALID_PLACE_RECORD, item: { kind: 'place_details', placeId: 900, tileNumber: 1, page: 1 } },
+      ['item'],
+    ],
+    [
+      'placeId 0',
+      { ...VALID_PLACE_RECORD, item: { kind: 'place_details', placeId: 0 } },
+      ['item', 'placeId'],
+    ],
+    ['runId 0', { ...VALID_PLACE_RECORD, runId: 0 }, ['runId']],
+    ['a missing message', omitKeys(VALID_PLACE_RECORD, 'message'), ['message']],
+  ];
+
+  it.each(invalid)('%s is invalid_data with the issue path', (_label, input, path) => {
+    const failure = invalidOf(expectNoThrow(validateFailureRecord, input));
+    issueAt(failure, path);
+  });
+
+  it('the failures never contain the input values', () => {
+    for (const [, input] of invalid) {
+      const text = JSON.stringify(invalidOf(expectNoThrow(validateFailureRecord, input)));
+      expect(text).not.toContain(SECRET_EXTRA);
+      expect(text).not.toContain('10:00:00.500');
+      expect(text).not.toContain('synthetic failure');
+      expect(text).not.toContain('key_quota_exhausted');
+    }
+  });
+
+  it.each(NOT_OBJECTS)('%s is invalid_data and does not throw', (_label, input) => {
+    const failure = invalidOf(expectNoThrow(validateFailureRecord, input));
+    expect(failure.issues.length).toBeGreaterThanOrEqual(1);
+    expect(JSON.stringify(failure)).not.toContain('synthetic-string-input');
+  });
+});
+
+describe('validateFailureRecordsInput', () => {
+  it.each([
+    ['by Place', { placeId: 900 }],
+    ['by Run', { runId: 7 }],
+  ])('%s is ok with a value equal to the parsed input', (_label, input) => {
+    expect(validateFailureRecordsInput(input)).toStrictEqual({
+      ok: true,
+      value: FailureRecordsInputSchema.parse(input),
+    });
+  });
+
+  it('the value is a fresh object', () => {
+    const input = { placeId: 900 };
+    const result = validateFailureRecordsInput(input);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.value).not.toBe(input);
+  });
+
+  it.each([
+    ['placeId 0', { placeId: 0 }, ['placeId']],
+    ['placeId 1.5', { placeId: 1.5 }, ['placeId']],
+    ['runId -1', { runId: -1 }, ['runId']],
+  ] as const)('%s is invalid_data with the issue path', (_label, input, path) => {
+    issueAt(invalidOf(expectNoThrow(validateFailureRecordsInput, input)), [...path]);
+  });
+
+  it.each([
+    ['{}', {}],
+    ['both placeId and runId', { placeId: 1, runId: 1 }],
+    ['an extra key', { placeId: 1, extra: SECRET_EXTRA }],
+    ['placeId as text', { placeId: '900' }],
+  ])('%s is invalid_data', (_label, input) => {
+    const failure = invalidOf(expectNoThrow(validateFailureRecordsInput, input));
+    expect(failure.issues.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('the failures never contain the input values', () => {
+    for (const input of [{ placeId: 1.5 }, { placeId: 1, extra: SECRET_EXTRA }]) {
+      const text = JSON.stringify(invalidOf(expectNoThrow(validateFailureRecordsInput, input)));
+      expect(text).not.toContain('1.5');
+      expect(text).not.toContain(SECRET_EXTRA);
+    }
+  });
+
+  it.each(NOT_OBJECTS)('%s is invalid_data and does not throw', (_label, input) => {
+    invalidOf(expectNoThrow(validateFailureRecordsInput, input));
+  });
+});
+
+describe('validateExplicitRetriesInput', () => {
+  it("{ regionName: 'test-one' } is ok with a value equal to the parsed input", () => {
+    const input = { regionName: 'test-one' };
+    expect(validateExplicitRetriesInput(input)).toStrictEqual({
+      ok: true,
+      value: ExplicitRetriesInputSchema.parse(input),
+    });
+  });
+
+  it('the value is a fresh object', () => {
+    const input = { regionName: 'test-one' };
+    const result = validateExplicitRetriesInput(input);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.value).not.toBe(input);
+  });
+
+  it.each([
+    ['uppercase', { regionName: 'Test-One' }],
+    ['empty', { regionName: '' }],
+    ['missing', {}],
+    ['a number', { regionName: 7 }],
+  ])('regionName %s names regionName', (_label, input) => {
+    issueAt(invalidOf(expectNoThrow(validateExplicitRetriesInput, input)), ['regionName']);
+  });
+
+  it('an extra key is invalid_data and does not echo its value', () => {
+    const failure = invalidOf(
+      expectNoThrow(validateExplicitRetriesInput, { regionName: 'test-one', extra: SECRET_EXTRA }),
+    );
+    expect(JSON.stringify(failure)).not.toContain(SECRET_EXTRA);
+  });
+
+  it('an uppercase Region Name is not echoed', () => {
+    const failure = invalidOf(expectNoThrow(validateExplicitRetriesInput, { regionName: 'Test-One' }));
+    expect(JSON.stringify(failure)).not.toContain('Test-One');
+  });
+
+  it.each(NOT_OBJECTS)('%s is invalid_data and does not throw', (_label, input) => {
+    invalidOf(expectNoThrow(validateExplicitRetriesInput, input));
   });
 });

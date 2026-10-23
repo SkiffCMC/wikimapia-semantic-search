@@ -41,6 +41,7 @@ export function redactFailure(failure: ClientFailure, apiKey: string): ClientFai
     case 'connection':
       return { ...failure, message };
     case 'wikimapia_error':
+    case 'key_quota_exhausted':
       return {
         ...failure,
         message,

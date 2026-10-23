@@ -530,6 +530,80 @@ describe('stop', () => {
       message: 'Request Budget of 3 used up.',
     });
   });
+
+  // crawl-run1-fixes AL4 1.4.3, U5: the stop keeps the optional Wikimapia text.
+  it("stop('quota_exhausted', message, wikimapiaMessage) keeps all three", () => {
+    const { gateway } = harness();
+    gateway.stop('quota_exhausted', 'm', 'w');
+    expect(gateway.stopped).toStrictEqual({
+      reason: 'quota_exhausted',
+      message: 'm',
+      wikimapiaMessage: 'w',
+    });
+  });
+
+  it('the first stop wins with its wikimapiaMessage: later stops change nothing', () => {
+    const { gateway } = harness();
+    gateway.stop('quota_exhausted', 'first message', 'first Wikimapia text');
+    gateway.stop('quota_exhausted', 'second message', 'second Wikimapia text');
+    gateway.stop('failed', 'later failure');
+    gateway.stop('interrupted');
+    expect(gateway.stopped).toStrictEqual({
+      reason: 'quota_exhausted',
+      message: 'first message',
+      wikimapiaMessage: 'first Wikimapia text',
+    });
+  });
+
+  it('a first stop without a Wikimapia text is not completed by a later one', () => {
+    const { gateway } = harness();
+    gateway.stop('budget_reached', 'Request Budget of 3 used up.');
+    gateway.stop('quota_exhausted', 'quota message', 'Key limit has been reached');
+    expect(gateway.stopped).toStrictEqual({
+      reason: 'budget_reached',
+      message: 'Request Budget of 3 used up.',
+    });
+    expect(Object.keys(gateway.stopped ?? {})).not.toContain('wikimapiaMessage');
+  });
+
+  it('absent arguments are absent keys, not undefined', () => {
+    const interrupted = harness().gateway;
+    interrupted.stop('interrupted');
+    expect(interrupted.stopped).toStrictEqual({ reason: 'interrupted' });
+    expect(Object.keys(interrupted.stopped ?? {})).toStrictEqual(['reason']);
+
+    const failed = harness().gateway;
+    failed.stop('failed', 'm');
+    expect(failed.stopped).toStrictEqual({ reason: 'failed', message: 'm' });
+    expect(Object.keys(failed.stopped ?? {}).sort()).toStrictEqual(['message', 'reason']);
+  });
+
+  it("an empty wikimapiaMessage is kept as ''", () => {
+    const { gateway } = harness();
+    gateway.stop('quota_exhausted', 'm', '');
+    expect(gateway.stopped).toStrictEqual({
+      reason: 'quota_exhausted',
+      message: 'm',
+      wikimapiaMessage: '',
+    });
+    expect(Object.keys(gateway.stopped ?? {})).toContain('wikimapiaMessage');
+  });
+
+  it('after a quota_exhausted stop, further requests are refused without a transport call', async () => {
+    const { gateway, client, wikimapia } = harness({
+      script: { listing: { 1: [pageAnswer(1)] } },
+    });
+    gateway.stop('quota_exhausted', 'm', 'w');
+    const result = await listPage(client, 1);
+    expect(result).toMatchObject({ ok: false, failure: { kind: 'connection' } });
+    expect(wikimapia.calls).toHaveLength(0);
+    expect(gateway.requestsSent).toBe(0);
+    expect(gateway.stopped).toStrictEqual({
+      reason: 'quota_exhausted',
+      message: 'm',
+      wikimapiaMessage: 'w',
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

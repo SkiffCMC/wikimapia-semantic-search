@@ -4,10 +4,13 @@
  * step and Details Save, every method guarded so it never rejects. Same pattern as the Crawl
  * Store: the factory never throws; validated inputs are checked before any database access; a
  * not-configured repository resolves `store_unavailable`; every throw is mapped to a fixed
- * message plus a safe code (no error text is ever copied). No SQL here.
+ * message plus a safe code (no error text is ever copied). No SQL here. Due lists and totals leave
+ * out the Parked Places of their bbox (AL4 crawl-run1-fixes 1.4.7).
  */
 import type { Knex } from 'knex';
+import type { FailureRecord } from '../../contracts/crawl-run1-fixes.schema';
 import type { DuePlace, PlacesDueInput } from '../../contracts/hydration.schema';
+import type { BoundingBox } from '../../contracts/wikimapia-client.schema';
 import {
   StoreConfigSchema,
   type SavePlaceDetailsInput,
@@ -23,7 +26,10 @@ import {
   listingPageStep,
   renewActivityStep,
 } from './crawl-progress';
+import { InvalidFailureRecordError, failureStep } from './failure-records';
 import { storeUnavailable, unavailableFrom } from './failures';
+import { selectParkedPlaces } from './parking';
+import { READ_TRANSACTION_CONFIG } from './place-store';
 import { countPlacesDue, selectPlacesDue } from './places-due';
 import { saveDetails } from './save-details';
 import type {
@@ -32,9 +38,12 @@ import type {
   CrawlRepository,
   CrawlRepositoryOptions,
   DueQuery,
+  FailureStepValue,
   FinishInput,
   ListingStepInput,
   ListingStepValue,
+  ParkedPlace,
+  RegionTotals,
   RenewInput,
   StoreResult,
   Validated,
@@ -94,6 +103,39 @@ function listingFailure(error: unknown): StoreFailure {
     : unavailableFrom(error, 'listing step');
 }
 
+function itemFailureFailure(error: unknown): StoreFailure {
+  return error instanceof InvalidFailureRecordError
+    ? error.failure
+    : unavailableFrom(error, 'item failure record');
+}
+
+/** Due list of a Run (AL4 1.4.7): Parked Places of the bbox left out, one READ COMMITTED transaction. */
+function listDue(db: Knex, value: PlacesDueInput, limit: number | undefined): Promise<DuePlace[]> {
+  return db.transaction(
+    async (trx) => {
+      const parked = await selectParkedPlaces(trx, { bbox: value.bbox });
+      return selectPlacesDue(trx, {
+        ...value,
+        ...(limit === undefined ? {} : { limit }),
+        excludePlaceIds: parked.map((place) => place.placeId),
+      });
+    },
+    { isolationLevel: 'read committed' },
+  );
+}
+
+/** Due and Parked counts of a Region (AL4 1.4.7): one REPEATABLE READ read-only transaction. */
+function totalsOf(db: Knex, value: PlacesDueInput): Promise<RegionTotals> {
+  return db.transaction(async (trx) => {
+    const parked = await selectParkedPlaces(trx, { bbox: value.bbox });
+    const placesDue = await countPlacesDue(trx, {
+      ...value,
+      excludePlaceIds: parked.map((place) => place.placeId),
+    });
+    return { placesDue, placesParked: parked.length };
+  }, READ_TRANSACTION_CONFIG);
+}
+
 /** One counter for the whole Run: the caller's hook sees 1, 2, 3, ... across every step. */
 function runWideHook(onWrite: WriteHook | undefined): WriteHook | undefined {
   if (onWrite === undefined) return undefined;
@@ -127,6 +169,13 @@ function buildRepository(db: Knex | undefined, hook: WriteHook | undefined): Cra
         (conn, value) => listingPageStep(conn, value, hook),
         listingFailure,
       ),
+    recordItemFailure: (record: FailureRecord): Promise<StoreResult<FailureStepValue>> =>
+      guarded(
+        db,
+        unchecked(record),
+        (conn, value) => failureStep(conn, value, hook),
+        itemFailureFailure,
+      ),
     saveDetails: (input: SavePlaceDetailsInput): Promise<StoreResult<SaveReport>> =>
       guarded(
         db,
@@ -138,19 +187,22 @@ function buildRepository(db: Knex | undefined, hook: WriteHook | undefined): Cra
       guarded(
         db,
         () => validatePlacesDueInput({ bbox: query.bbox, dueBefore: query.dueBefore }),
-        (conn, value) =>
-          selectPlacesDue(conn, {
-            ...value,
-            ...(query.limit === undefined ? {} : { limit: query.limit }),
-          }),
+        (conn, value) => listDue(conn, value, query.limit),
         failureFor('list places due'),
       ),
-    countPlacesDue: (input: PlacesDueInput): Promise<StoreResult<number>> =>
+    listParkedPlaces: (input: { bbox: BoundingBox }): Promise<StoreResult<ParkedPlace[]>> =>
+      guarded(
+        db,
+        unchecked(input),
+        (conn, value) => selectParkedPlaces(conn, { bbox: value.bbox }),
+        failureFor('list parked places'),
+      ),
+    regionTotals: (input: PlacesDueInput): Promise<StoreResult<RegionTotals>> =>
       guarded(
         db,
         () => validatePlacesDueInput(input),
-        (conn, value) => countPlacesDue(conn, value),
-        failureFor('count places due'),
+        (conn, value) => totalsOf(conn, value),
+        failureFor('region totals'),
       ),
     finishRun: (input: FinishInput): Promise<StoreResult<{ updated: boolean }>> =>
       guarded(

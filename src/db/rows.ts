@@ -6,7 +6,11 @@
  * parser (`connection.ts`).
  */
 import { z } from 'zod';
-import { RunCountsSchema, RunRecordStatusSchema } from '../../contracts/hydration.schema';
+import {
+  ItemFailureKindSchema,
+  RunCountsSchema,
+  RunRecordStatusSchema,
+} from '../../contracts/hydration.schema';
 import { PresenceSchema } from '../../contracts/storage.schema';
 
 const BigintSchema = z.number().int();
@@ -118,6 +122,33 @@ export const BigintProbeRowSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Old Run Records (AL4 crawl-run1-fixes 1.4.12, decision 5): read path only, never rewritten
+// ---------------------------------------------------------------------------
+
+/** Counts that Run Records stored before crawl-run1-fixes do not carry. */
+export const PARKING_COUNT_DEFAULTS = {
+  placesParkedThisRun: 0,
+  placesParked: 0,
+  placesReleased: 0,
+} as const;
+
+function isPlainObject(value: unknown): value is object {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Validator pre-step over untrusted database JSON (`unknown` allowed, `.agrules` section 5):
+ * fills missing parking counts with 0 under a plain object; stored values win. Anything else
+ * is returned unchanged, so it still fails `RunCountsSchema`.
+ */
+export function withParkingCounts(value: unknown): unknown {
+  return isPlainObject(value) ? { ...PARKING_COUNT_DEFAULTS, ...value } : value;
+}
+
+/** `crawl_runs.counts` as stored: old records read with the parking counts as 0. */
+export const StoredRunCountsSchema = z.preprocess(withParkingCounts, RunCountsSchema);
+
+// ---------------------------------------------------------------------------
 // Crawl Progress and Places Due rows (AL4 hydration 1.1 `rows.ts`, 1.4.6, 1.4.7, 1.4.11, 2.2 .. 2.4)
 // ---------------------------------------------------------------------------
 
@@ -129,7 +160,7 @@ export const RunRowSchema = z.object({
   started_at_text: z.string(),
   ended_at_text: z.string().nullable(),
   last_activity_text: z.string(),
-  counts: RunCountsSchema,
+  counts: StoredRunCountsSchema,
 });
 
 /** `crawl_passes`, the Tile Plan inputs of one Listing Pass. */
@@ -183,4 +214,38 @@ export const IdRowSchema = z.object({
 export const LiveRunRowSchema = z.object({
   run_id: BigintSchema,
   last_activity_text: z.string(),
+});
+
+// ---------------------------------------------------------------------------
+// Failure Records and Explicit Retries (AL4 crawl-run1-fixes 1.4.8, 2.2, 2.3, 2.5)
+// ---------------------------------------------------------------------------
+
+/** `crawl_item_failures`, `failed_at` formatted with `to_char`. */
+export const FailureRowSchema = z.object({
+  run_id: BigintSchema,
+  place_id: BigintSchema.nullable(),
+  tile_number: z.number().int().nullable(),
+  page_no: z.number().int().nullable(),
+  failure_kind: ItemFailureKindSchema,
+  message: z.string(),
+  failed_at_text: z.string(),
+});
+
+/** `crawl_explicit_retries`, `retried_at` formatted with `to_char`. */
+export const RetryRowSchema = z.object({
+  run_id: BigintSchema,
+  region_name: z.string(),
+  retried_at_text: z.string(),
+  places_released: z.number().int(),
+});
+
+/** Parking inputs of one Failure Record about a Place (AL4 crawl-run1-fixes 1.4.6, 2.5). */
+export const ParkingRowSchema = z.object({
+  run_id: BigintSchema,
+  place_id: BigintSchema,
+  failure_kind: ItemFailureKindSchema,
+  message: z.string(),
+  failed_at_text: z.string(),
+  details_fetched_at_text: z.string().nullable(),
+  released_at_text: z.string().nullable(),
 });

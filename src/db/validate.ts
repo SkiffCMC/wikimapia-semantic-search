@@ -24,6 +24,14 @@ import {
   type CrawlProgressInput,
   type PlacesDueInput,
 } from '../../contracts/hydration.schema';
+import {
+  ExplicitRetriesInputSchema,
+  FailureRecordSchema,
+  FailureRecordsInputSchema,
+  type ExplicitRetriesInput,
+  type FailureRecord,
+  type FailureRecordsInput,
+} from '../../contracts/crawl-run1-fixes.schema';
 import { toFailureIssues } from '../wikimapia/issues';
 import { invalidData } from './failures';
 import type { Validated } from './types';
@@ -102,5 +110,35 @@ export function validateCrawlProgressInput(input: unknown): Validated<CrawlProgr
     CrawlProgressInputSchema,
     input,
     'input does not have the shape of a Crawl Progress query',
+  );
+}
+
+export function validateFailureRecord(input: unknown): Validated<FailureRecord> {
+  return plain(FailureRecordSchema, input, 'input does not have the shape of a Failure Record');
+}
+
+/**
+ * The Failure Records query is a union of a by-Place and a by-Run shape. When the union fails
+ * and the input names exactly one shape's key, that shape's issues are reported, so they carry
+ * the field path (e.g. `['placeId']`) instead of one whole-input union issue.
+ */
+export function validateFailureRecordsInput(input: unknown): Validated<FailureRecordsInput> {
+  const shapeMessage = 'input does not have the shape of a Failure Records query';
+  const result = plain(FailureRecordsInputSchema, input, shapeMessage);
+  if (result.ok || !isRecord(input)) return result;
+  const named = FailureRecordsInputSchema.options.filter((option) =>
+    Object.keys(option.shape).some((key) => key in input),
+  );
+  const option = named.length === 1 ? named[0] : undefined;
+  if (option === undefined) return result;
+  const narrowed = plain<FailureRecordsInput>(option, input, shapeMessage);
+  return narrowed.ok ? result : narrowed;
+}
+
+export function validateExplicitRetriesInput(input: unknown): Validated<ExplicitRetriesInput> {
+  return plain(
+    ExplicitRetriesInputSchema,
+    input,
+    'input does not have the shape of an Explicit Retries query',
   );
 }

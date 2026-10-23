@@ -36,6 +36,8 @@ const TableExistsResultSchema = z.object({
 const TRUNCATE_STORE_TABLES = 'TRUNCATE TABLE place_tags, comments, tags, places';
 const TRUNCATE_CRAWL_TABLES =
   'TRUNCATE TABLE crawl_finished_pages, crawl_passes, crawl_runs RESTART IDENTITY';
+const TRUNCATE_ALL_CRAWL_TABLES =
+  'TRUNCATE TABLE crawl_place_releases, crawl_explicit_retries, crawl_item_failures, crawl_finished_pages, crawl_passes, crawl_runs RESTART IDENTITY';
 const TABLE_EXISTS = 'select to_regclass(?) is not null as present';
 
 const MIGRATION_CONFIG: Knex.MigratorConfig = {
@@ -122,7 +124,10 @@ function configuredSetup(db: Knex): SchemaSetup {
         await trx.raw(TRUNCATE_STORE_TABLES);
         const result: unknown = await trx.raw(TABLE_EXISTS, [CRAWL_TABLES.runs]);
         const [{ present }] = TableExistsResultSchema.parse(result).rows;
-        if (present) await trx.raw(TRUNCATE_CRAWL_TABLES);
+        if (!present) return;
+        const failures: unknown = await trx.raw(TABLE_EXISTS, [CRAWL_TABLES.itemFailures]);
+        const [{ present: failuresPresent }] = TableExistsResultSchema.parse(failures).rows;
+        await trx.raw(failuresPresent ? TRUNCATE_ALL_CRAWL_TABLES : TRUNCATE_CRAWL_TABLES);
       });
       return { ok: true, value: {} };
     } catch (error) {

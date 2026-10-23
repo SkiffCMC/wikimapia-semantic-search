@@ -8,7 +8,7 @@ import {
   RawBoxResponseSchema,
   RawDebugResponseSchema,
   RawPlaceDetailsSchema,
-  parseRateLimitMessage,
+  classifyDebugResponse,
   type ListingPage,
   type PlaceDetails,
 } from '../../contracts/wikimapia-client.schema';
@@ -39,11 +39,19 @@ export function interpretAnswer<S extends z.ZodType, T>(
 
   const debug = RawDebugResponseSchema.safeParse(parsed.value);
   if (debug.success) {
-    const message = debug.data.debug.message;
-    const info = parseRateLimitMessage(message);
-    return info.isRateLimit
-      ? { kind: 'rate_limit', waitSeconds: info.waitSeconds }
-      : { kind: 'wikimapia_error', message };
+    const info = classifyDebugResponse(debug.data.debug);
+    switch (info.kind) {
+      case 'key_quota':
+        return { kind: 'key_quota', message: info.message };
+      case 'rate_limit':
+        return { kind: 'rate_limit', waitSeconds: info.waitSeconds };
+      case 'wikimapia_error':
+        return { kind: 'wikimapia_error', message: info.message };
+      default: {
+        const unreachable: never = info;
+        return unreachable;
+      }
+    }
   }
 
   const raw = rawSchema.safeParse(parsed.value);

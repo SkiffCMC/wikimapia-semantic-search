@@ -8,24 +8,40 @@
 import type { Knex } from 'knex';
 import { z } from 'zod';
 import {
+  ExplicitRetriesValueSchema,
+  FailureRecordsValueSchema,
+  type CreateFailureAwareCrawlStoreFn,
+  type ExplicitRetriesInput,
+  type ExplicitRetriesResult,
+  type FailureRecordStore,
+  type FailureRecordsInput,
+  type FailureRecordsResult,
+} from '../../contracts/crawl-run1-fixes.schema';
+import {
   CrawlProgressViewSchema,
   PlacesDueValueSchema,
   type CrawlProgressInput,
   type CrawlProgressResult,
   type CrawlStore,
   type CrawlStoreOptions,
-  type CreateCrawlStoreFn,
   type PlacesDueInput,
   type PlacesDueResult,
 } from '../../contracts/hydration.schema';
 import { StoreConfigSchema, type StoreFailure } from '../../contracts/storage.schema';
 import { POOL_MAX_STORE, createDb, destroyQuietly } from './connection';
 import { readProgressView } from './crawl-progress';
+import { selectExplicitRetries, selectFailureRecords } from './failure-records';
 import { storeUnavailable, unavailableFrom } from './failures';
+import { selectParkedPlaces } from './parking';
 import { READ_TRANSACTION_CONFIG } from './place-store';
 import { selectPlacesDue } from './places-due';
 import type { StoreResult, Validated } from './types';
-import { validateCrawlProgressInput, validatePlacesDueInput } from './validate';
+import {
+  validateCrawlProgressInput,
+  validateExplicitRetriesInput,
+  validateFailureRecordsInput,
+  validatePlacesDueInput,
+} from './validate';
 
 const NOT_CONFIGURED_MESSAGE =
   'Place Store is not configured: connection string is missing or unusable';
@@ -74,14 +90,21 @@ async function guarded<I, T>(
   }
 }
 
-function buildStore(db: Knex | undefined): CrawlStore {
+function buildStore(db: Knex | undefined): CrawlStore & FailureRecordStore {
   return {
     listPlacesDueForDetails: (input: PlacesDueInput): Promise<PlacesDueResult> =>
       guarded(
         db,
         () => validatePlacesDueInput(input),
         async (conn, value) => {
-          const places = await selectPlacesDue(conn, { bbox: value.bbox, dueBefore: value.dueBefore });
+          const places = await conn.transaction(async (trx) => {
+            const parked = await selectParkedPlaces(trx, { bbox: value.bbox });
+            return selectPlacesDue(trx, {
+              bbox: value.bbox,
+              dueBefore: value.dueBefore,
+              excludePlaceIds: parked.map((place) => place.placeId),
+            });
+          }, READ_TRANSACTION_CONFIG);
           return PlacesDueValueSchema.parse({ places });
         },
         readFailure('list places due'),
@@ -99,11 +122,31 @@ function buildStore(db: Knex | undefined): CrawlStore {
         },
         readFailure('read crawl progress'),
       ),
+    readFailureRecords: (input: FailureRecordsInput): Promise<FailureRecordsResult> =>
+      guarded(
+        db,
+        () => validateFailureRecordsInput(input),
+        async (conn, value) => {
+          const records = await selectFailureRecords(conn, value);
+          return FailureRecordsValueSchema.parse({ records });
+        },
+        readFailure('read failure records'),
+      ),
+    readExplicitRetries: (input: ExplicitRetriesInput): Promise<ExplicitRetriesResult> =>
+      guarded(
+        db,
+        () => validateExplicitRetriesInput(input),
+        async (conn, value) => {
+          const retries = await selectExplicitRetries(conn, value);
+          return ExplicitRetriesValueSchema.parse({ retries });
+        },
+        readFailure('read explicit retries'),
+      ),
     close: () => destroyQuietly(db),
   };
 }
 
-export const createCrawlStore: CreateCrawlStoreFn = (options) => {
+export const createCrawlStore: CreateFailureAwareCrawlStoreFn = (options) => {
   try {
     return buildStore(openDb(options));
   } catch {
