@@ -6,6 +6,7 @@
  * state between calls.
  */
 import {
+  KEY_QUOTA_CODE,
   TransportResponseSchema,
   type ClientFailure,
   type FailureIssue,
@@ -19,12 +20,17 @@ import type { ClientResult, ExecuteDeps, Interpretation, TransportOutcome } from
 const UNEXPECTED_PREFIX = 'Unexpected Wikimapia response';
 const CONNECTION_MESSAGE = 'Wikimapia could not be reached';
 const WIKIMAPIA_ERROR_MESSAGE = 'Wikimapia reported an error';
+const KEY_QUOTA_PREFIX = `Wikimapia key quota exhausted (code ${String(KEY_QUOTA_CODE)})`;
 const ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 
 const MALFORMED_ISSUES: readonly FailureIssue[] = [
   { path: [], message: 'transport returned a malformed response' },
 ];
 const INTERNAL_ISSUES: readonly FailureIssue[] = [{ path: [], message: 'internal client error' }];
+
+function keyQuotaMessage(wikimapiaMessage: string): string {
+  return wikimapiaMessage.trim() === '' ? KEY_QUOTA_PREFIX : `${KEY_QUOTA_PREFIX}: ${wikimapiaMessage}`;
+}
 
 function unexpectedResponse(issues: readonly FailureIssue[]): ClientFailure {
   return {
@@ -91,6 +97,16 @@ async function run<T>(
     switch (interpretation.kind) {
       case 'data':
         return { ok: true, value: interpretation.value };
+      case 'key_quota':
+        return {
+          ok: false,
+          failure: {
+            kind: 'key_quota_exhausted',
+            message: keyQuotaMessage(interpretation.message),
+            wikimapiaMessage: interpretation.message,
+            code: KEY_QUOTA_CODE,
+          },
+        };
       case 'wikimapia_error':
         return {
           ok: false,

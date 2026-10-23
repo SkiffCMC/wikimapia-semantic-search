@@ -26,6 +26,7 @@ import {
 } from '../../contracts/hydration.schema';
 import type { StoreFailure, WriteHook } from '../../contracts/storage.schema';
 import { CRAWL_REGION_LOCK_CLASS, CRAWL_TABLES } from './crawl-tables';
+import { releaseParkedPlaces } from './parking';
 import { dedupeListing } from './plan';
 import {
   FinishedPageRowSchema,
@@ -245,7 +246,7 @@ function isComplete(current: CurrentPass): boolean {
 }
 
 /** Locks the Run row while it is in progress; `false` when it is not (taken over or unknown). */
-async function lockLiveRun(trx: Knex.Transaction, runId: number): Promise<boolean> {
+export async function lockLiveRun(trx: Knex.Transaction, runId: number): Promise<boolean> {
   const rows: unknown = await trx(CRAWL_TABLES.runs)
     .select({ id: 'run_id' })
     .where({ run_id: runId, status: 'in_progress' })
@@ -304,6 +305,15 @@ export async function beginRunStep(
       }),
     );
 
+    const placesReleased = input.retryParked
+      ? await releaseParkedPlaces(trx, writer, {
+          runId,
+          regionName: input.regionName,
+          bbox: input.bbox,
+          at: input.startedAt,
+        })
+      : 0;
+
     const abandonedRunIds = live.map((row) => row.run_id);
     if (input.relist || current === undefined) {
       const passNumber = (current?.row.pass_number ?? 0) + 1;
@@ -328,13 +338,14 @@ export async function beginRunStep(
         finishedTiles: [],
         lastFinishedPage: [],
       };
-      return { kind: 'started', runId, pass, abandonedRunIds };
+      return { kind: 'started', runId, pass, abandonedRunIds, placesReleased };
     }
     return {
       kind: 'started',
       runId,
       ...(isComplete(current) ? {} : { pass: current.state }),
       abandonedRunIds,
+      placesReleased,
     };
   });
 }

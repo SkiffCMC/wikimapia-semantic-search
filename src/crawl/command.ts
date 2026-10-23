@@ -4,6 +4,11 @@
  * output lines (failure message, Dry Run plan, plain-text Run Summary) and maps the Run Outcome
  * to the exit code. Never rejects. Reads only the API key and database URL from `io.env` and
  * hands them to `runCrawl` unprinted. No SQL, no network of its own.
+ *
+ * `--retry-parked` (crawl-run1-fixes AL4 1.4.10, 1.4.11; AC-40) sets `retryParked` on the
+ * request. For a Planned report that carries `parkedPlacesInRegion` (a Dry Run with the option),
+ * one extra line `Parked places that --retry-parked would release: <n>` is written after the plan
+ * lines and before the summary lines; it is never part of `summaryText`.
  */
 import {
   API_KEY_ENV,
@@ -34,6 +39,7 @@ const NUMBER_PATTERN = /^-?\d+(?:\.\d+)?$/;
 const FLAG_OPTIONS: readonly string[] = [
   CRAWL_COMMAND_OPTIONS.dryRun,
   CRAWL_COMMAND_OPTIONS.relist,
+  CRAWL_COMMAND_OPTIONS.retryParked,
 ];
 
 const VALUED_OPTIONS: readonly string[] = [
@@ -78,6 +84,7 @@ export function parseCrawlArgs(argv: readonly string[]): ParsedCrawlArgs {
     ...(regionName !== undefined ? { regionName } : {}),
     ...(flags.has(CRAWL_COMMAND_OPTIONS.dryRun) ? { dryRun: true } : {}),
     ...(flags.has(CRAWL_COMMAND_OPTIONS.relist) ? { relist: true } : {}),
+    ...(flags.has(CRAWL_COMMAND_OPTIONS.retryParked) ? { retryParked: true } : {}),
     ...(budget !== undefined ? { requestBudget: toNumber(budget) } : {}),
     ...(minInterval !== undefined ? { minRequestIntervalSeconds: toNumber(minInterval) } : {}),
     ...(refreshAge !== undefined ? { refreshAgeDays: toNumber(refreshAge) } : {}),
@@ -107,6 +114,11 @@ function writeReport(report: RunReport, write: (line: string) => void): void {
   if (report.outcome === 'planned' && report.plan !== undefined) {
     write(`Region ${report.plan.regionName}: ${String(report.plan.tiles.length)} tiles`);
     for (const line of formatPlanLines(report.plan)) write(line);
+  }
+  if (report.outcome === 'planned' && report.parkedPlacesInRegion !== undefined) {
+    write(
+      `Parked places that ${CRAWL_COMMAND_OPTIONS.retryParked} would release: ${String(report.parkedPlacesInRegion)}`,
+    );
   }
   for (const line of report.summaryText.split('\n')) write(line);
 }

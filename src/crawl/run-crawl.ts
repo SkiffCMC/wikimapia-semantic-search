@@ -2,7 +2,10 @@
  * The Run (AL4 1.1 row `run-crawl.ts`, 1.2 Run flow, 1.4.5 .. 1.4.9; U6): resolution, Dry Run,
  * API Key check, the start step, the Gateway with its Last Activity heartbeat, the Listing and
  * Details Phases, the Run end and the report. Never rejects. Opens exactly one crawl repository
- * per non-dry Run and closes it on every path. `deps.onWrite` is handed to the repository
+ * per non-dry Run and closes it on every path. crawl-run1-fixes U6 (AL4 1.2): a Dry Run with
+ * `retryParked` opens one repository without the hook, only to read the Parked count; the start
+ * step gets `retryParked` (Explicit Retry); the Run end reads the Region totals (due and Parked)
+ * in one read, with the fallback estimates; a Key Quota stop reports Wikimapia's message. `deps.onWrite` is handed to the repository
  * unchanged: the single Run-wide write counter is the repository's (AL4 1.4.9). No SQL.
  */
 import {
@@ -25,7 +28,8 @@ import { createWikimapiaClient } from '../wikimapia/client';
 import { MISSING_API_KEY_MESSAGE, isMissingApiKey, resolveRun } from './config';
 import { runDetailsPhase } from './details-phase';
 import { createGateway } from './gateway';
-import { runListingPhase, takenOverMessage } from './listing-phase';
+import { takenOverMessage } from './failures';
+import { runListingPhase } from './listing-phase';
 import { buildReport, createTally, failedReport, plannedReport } from './report';
 import { createSystemCrawlClock, defaultTransport } from './runtime';
 import type {
@@ -98,12 +102,17 @@ async function runStarted(input: {
   const tally = createTally();
 
   // The heartbeat runs only once the Gateway exists (renewals start with the first request).
-  const holder: { gateway?: Gateway } = {};
-  const snapshot = (gateway: Gateway, placesStillDue: number): RunCounts =>
+  // Interim counts (AL4 1.2 "Heartbeat snapshots"): nothing still due, the Parked count the
+  // Details Phase started with (0 before it) plus the Places parked in this Run.
+  const holder: { gateway?: Gateway; ctx?: RunContext } = {};
+  const snapshot = (gateway: Gateway, placesStillDue: number, placesParked: number): RunCounts =>
     tally.snapshot(gateway.counts(), {
       tilesUnfinished: tilesUnfinishedOf(cursor),
       placesStillDue,
+      placesParked,
+      placesReleased: started.placesReleased,
     });
+  const interimParked = (): number => (holder.ctx?.parkedAtDetailsStart ?? 0) + tally.parkedThisRun;
 
   const heartbeat = async (): Promise<HeartbeatOutcome> => {
     const gateway = holder.gateway;
@@ -111,7 +120,7 @@ async function runStarted(input: {
     const renewed = await repo.renewActivity({
       runId,
       at: toMoment(clock.now()),
-      counts: snapshot(gateway, 0),
+      counts: snapshot(gateway, 0, interimParked()),
     });
     if (!renewed.ok) return { ok: false, message: renewed.failure.message };
     if (!renewed.value.alive) return { ok: false, message: takenOverMessage(regionName) };
@@ -148,14 +157,17 @@ async function runStarted(input: {
     clock,
     signal: deps.signal,
     progress,
+    parkedAtDetailsStart: 0,
   };
+  holder.ctx = ctx;
 
   if (cursor !== undefined && gateway.stopped === undefined) {
     await runListingPhase(ctx, cursor);
   }
   let dueLoaded = 0;
+  let parkedAtStart = 0;
   if (gateway.stopped === undefined) {
-    dueLoaded = (await runDetailsPhase(ctx)).dueLoaded;
+    ({ dueLoaded, parkedAtStart } = await runDetailsPhase(ctx));
   }
 
   // Run end (AL4 1.4.8).
@@ -164,11 +176,14 @@ async function runStarted(input: {
   let message = stopped?.message;
   if (stopped !== undefined) progress(`Stopping: ${OUTCOME_LABELS[stopped.reason]}`);
 
-  const due = await repo.countPlacesDue({ bbox: run.region.bbox, dueBefore });
-  const placesStillDue = due.ok
-    ? due.value
-    : Math.max(0, dueLoaded - snapshot(gateway, 0).detailsSaved);
-  const counts = snapshot(gateway, placesStillDue);
+  const totals = await repo.regionTotals({ bbox: run.region.bbox, dueBefore });
+  const placesStillDue = totals.ok
+    ? totals.value.placesDue
+    : Math.max(0, dueLoaded - snapshot(gateway, 0, interimParked()).detailsSaved);
+  const placesParked = totals.ok
+    ? Math.max(totals.value.placesParked, tally.parkedThisRun)
+    : parkedAtStart + tally.parkedThisRun;
+  const counts = snapshot(gateway, placesStillDue, placesParked);
   const endedAt = toMoment(clock.now());
 
   const finished = await repo.finishRun({ runId, status: outcome, endedAt, counts });
@@ -178,9 +193,12 @@ async function runStarted(input: {
     await repo.finishRun({ runId, status: 'failed', endedAt, counts });
   }
 
+  const wikimapiaMessage =
+    outcome === 'quota_exhausted' ? stopped?.wikimapiaMessage : undefined;
   return buildReport({
     outcome,
     ...(message === undefined ? {} : { message }),
+    ...(wikimapiaMessage === undefined ? {} : { wikimapiaMessage }),
     regionName,
     startedAt,
     endedAt,
@@ -206,8 +224,19 @@ async function runGuarded(
   if (!resolution.ok) return failedReport(resolution.message, resolution.regionName, startedAt);
   const run = resolution.run;
 
-  // 2. Dry Run: no database, no key.
-  if (run.dryRun) return plannedReport(run.plan, startedAt);
+  // 2. Dry Run: no key. Without the option no database; with it one read of the Parked count,
+  // through a repository opened without the hook (nothing is written).
+  if (run.dryRun) {
+    if (!run.retryParked) return plannedReport(run.plan, startedAt);
+    const readRepo = openCrawlRepository({ connectionString: deps.connectionString });
+    try {
+      const p = await readRepo.listParkedPlaces({ bbox: run.region.bbox });
+      if (!p.ok) return failedReport(p.failure.message, run.regionName, startedAt);
+      return plannedReport(run.plan, startedAt, p.value.length);
+    } finally {
+      await readRepo.close();
+    }
+  }
 
   // 3. API Key.
   if (isMissingApiKey(deps.apiKey)) {
@@ -230,6 +259,7 @@ async function runGuarded(
       startedAt,
       abandonBefore: toMoment(new Date(Date.parse(startedAt) - ABANDONMENT_AGE_SECONDS * 1000)),
       counts: ZERO_RUN_COUNTS,
+      retryParked: run.retryParked,
     });
     if (!begun.ok) return failedReport(begun.failure.message, run.regionName, startedAt);
 
@@ -252,6 +282,11 @@ async function runGuarded(
           progress(`Marked run ${String(abandoned)} as abandoned`);
         }
         progress(startedLine(value.runId, run.regionName, value.pass));
+        if (run.retryParked) {
+          progress(
+            `Explicit retry: released ${String(value.placesReleased)} parked places of region ${run.regionName}`,
+          );
+        }
         return await runStarted({
           run,
           started: value,

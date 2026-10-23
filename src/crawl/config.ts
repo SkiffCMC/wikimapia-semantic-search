@@ -69,7 +69,7 @@ export function knownRegionNames(configuration: CrawlConfiguration): string[] {
 }
 
 export function usageMessage(names: readonly string[]): string {
-  return `No region given. Usage: pnpm crawl ${CRAWL_COMMAND_OPTIONS.region} <name> [--dry-run] [--relist] [--budget <n>] [--min-interval <seconds>] [--refresh-age <days>]. Known regions: ${names.join(', ')}.`;
+  return `No region given. Usage: pnpm crawl ${CRAWL_COMMAND_OPTIONS.region} <name> [--dry-run] [--relist] [${CRAWL_COMMAND_OPTIONS.retryParked}] [--budget <n>] [--min-interval <seconds>] [--refresh-age <days>]. Known regions: ${names.join(', ')}.`;
 }
 
 export function isMissingApiKey(apiKey: string | undefined): boolean {
@@ -106,6 +106,7 @@ export function resolveRun(request: CrawlRequest, configuration: CrawlConfigurat
       plan: planTiles(region),
       dryRun: r.data.dryRun === true,
       relist: r.data.relist === true,
+      retryParked: r.data.retryParked === true,
     },
   };
 }

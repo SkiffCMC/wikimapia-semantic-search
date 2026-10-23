@@ -3,7 +3,8 @@
  * alias and interface declared in `src/crawl/`. Types only, no runtime code. Contract `z.infer`
  * types stay in the schema files and are not re-exported here. U5 adds the Gateway and request
  * types (`RequestKind` .. `ClientCall<T>`); U6 adds the Run context types (`PassCursor`,
- * `RunContext`) shared by the Listing and Details Phases. U7 adds `ParsedCrawlArgs`, the result
+ * `RunContext`) shared by the Listing and Details Phases. crawl-run1-fixes U6 adds
+ * `ResolvedRun.retryParked`, `DetailsPhaseResult` and `RunContext.parkedAtDetailsStart`. U7 adds `ParsedCrawlArgs`, the result
  * of the Crawl Command's argument parsing.
  */
 import type {
@@ -25,12 +26,21 @@ import type {
 } from '../../contracts/hydration.schema';
 import type { CrawlRepository } from '../db/types';
 
-/** Why a Run stopped early: budget_reached | rate_limited | interrupted | failed. */
+/**
+ * Why a Run stopped early: budget_reached | rate_limited | quota_exhausted | interrupted | failed.
+ */
 export type StopReason = Exclude<RunOutcome, 'completed' | 'planned'>;
 
 export interface Stop {
   reason: StopReason;
   message?: string;
+  /** The Client-redacted Wikimapia text of a Key Quota stop. */
+  wikimapiaMessage?: string;
+}
+
+/** Extra notes for the Run Summary text; `wikimapiaMessage` is used only for quota_exhausted. */
+export interface SummaryNotes {
+  wikimapiaMessage?: string;
 }
 
 /** Which kind of Wikimapia Request the Gateway counts the following transport calls as. */
@@ -44,6 +54,8 @@ export interface ResolvedRun {
   plan: TilePlan;
   dryRun: boolean;
   relist: boolean;
+  /** Release the Parked Places of the Region at Run start (Explicit Retry). */
+  retryParked: boolean;
 }
 
 /** `regionName` on failure: the (trimmed) name asked for, if any. */
@@ -81,7 +93,7 @@ export interface Gateway {
   readonly clock: CrawlClock;
   setKind(kind: RequestKind): void;
   /** The first stop wins. */
-  stop(reason: StopReason, message?: string): void;
+  stop(reason: StopReason, message?: string, wikimapiaMessage?: string): void;
   readonly stopped: Stop | undefined;
   readonly requestsSent: number;
   counts(): GatewayCounts;
@@ -104,10 +116,18 @@ export interface Tally {
   pageSaved(placeIds: readonly number[], createdCount: number, tileFinished: boolean): void;
   detailsSaved(changed: boolean): void;
   itemFailure(item: FailedItem, failureKind: ItemFailureKind, message: string): void;
+  /** One Place parked during this Run. */
+  placeParked(): void;
   readonly failures: readonly ItemFailureReport[];
+  readonly parkedThisRun: number;
   snapshot(
     gateway: GatewayCounts,
-    extra: { tilesUnfinished: number; placesStillDue: number },
+    extra: {
+      tilesUnfinished: number;
+      placesStillDue: number;
+      placesParked: number;
+      placesReleased: number;
+    },
   ): RunCounts;
 }
 
@@ -134,6 +154,14 @@ export interface RunContext {
   clock: CrawlClock;
   signal: AbortSignal | undefined;
   progress: (line: string) => void;
+  /** Parked Region Places when the Details Phase started (0 before it); set by the Details Phase. */
+  parkedAtDetailsStart: number;
+}
+
+/** Result of the Details Phase (AL4 crawl-run1-fixes 1.3). */
+export interface DetailsPhaseResult {
+  dueLoaded: number;
+  parkedAtStart: number;
 }
 
 /** Result of `parseCrawlArgs`: the Run request, or a short problem naming the option or token. */

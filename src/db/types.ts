@@ -19,8 +19,10 @@ import type {
   Point,
   Tag,
 } from '../../contracts/wikimapia-client.schema';
+import type { FailureRecord } from '../../contracts/crawl-run1-fixes.schema';
 import type {
   DuePlace,
+  ItemFailureKind,
   Moment,
   PlacesDueInput,
   RunCounts,
@@ -34,13 +36,16 @@ import type {
   CountRowSchema,
   CountsRowSchema,
   DuePlaceRowSchema,
+  FailureRowSchema,
   FinishedPageRowSchema,
   IdRowSchema,
   LiveRunRowSchema,
   NameRowSchema,
+  ParkingRowSchema,
   PassRowSchema,
   PassTileRowSchema,
   PlaceRowSchema,
+  RetryRowSchema,
   RingPointRowSchema,
   RunRowSchema,
   ShapeRowSchema,
@@ -69,6 +74,9 @@ export type DuePlaceRow = z.infer<typeof DuePlaceRowSchema>;
 export type CountRow = z.infer<typeof CountRowSchema>;
 export type IdRow = z.infer<typeof IdRowSchema>;
 export type LiveRunRow = z.infer<typeof LiveRunRowSchema>;
+export type FailureRow = z.infer<typeof FailureRowSchema>;
+export type RetryRow = z.infer<typeof RetryRowSchema>;
+export type ParkingRow = z.infer<typeof ParkingRowSchema>;
 
 /** jsonb form of an Outline: `[[lon, lat], ...]`. */
 export type OutlinePairs = [number, number][];
@@ -211,9 +219,13 @@ export interface CurrentPass {
   state: PassState;
 }
 
-/** R1 query input plus an optional row limit (AL4 hydration 1.3, 1.4.7). */
+/**
+ * R1 query input plus an optional row limit (AL4 hydration 1.3, 1.4.7) and the Places to leave
+ * out (the Parked Places, AL4 crawl-run1-fixes 1.4.7).
+ */
 export interface DueQuery extends PlacesDueInput {
   limit?: number;
+  excludePlaceIds?: readonly number[];
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +242,8 @@ export interface BeginRunInput {
   startedAt: Moment;
   abandonBefore: Moment;
   counts: RunCounts;
+  /** Release the Parked Places of the Region and keep an Explicit Retry (AL4 crawl-run1-fixes 1.4.5). */
+  retryParked: boolean;
 }
 
 /**
@@ -237,7 +251,13 @@ export interface BeginRunInput {
  * there is no Listing Phase (the key is omitted, never set to `undefined`).
  */
 export type BeginRunValue =
-  | { kind: 'started'; runId: number; pass?: PassState; abandonedRunIds: number[] }
+  | {
+      kind: 'started';
+      runId: number;
+      pass?: PassState;
+      abandonedRunIds: number[];
+      placesReleased: number;
+    }
   | { kind: 'run_in_progress'; runId: number; lastActivity: Moment }
   | { kind: 'region_changed'; passNumber: number };
 
@@ -269,6 +289,34 @@ export interface FinishInput {
   counts: RunCounts;
 }
 
+/** A Parked Place and the Item Failure Kind that parks it (AL4 crawl-run1-fixes 1.3). */
+export interface ParkedPlace {
+  placeId: number;
+  failureKind: ItemFailureKind;
+}
+
+/** Scope of a Parking read: the Places of a bbox, or one Place (AL4 crawl-run1-fixes 1.4.6). */
+export type ParkingScope = { bbox: BoundingBox } | { placeId: number };
+
+/** Input of the Explicit Retry releases inside the Run start (AL4 crawl-run1-fixes 1.4.5). */
+export interface ReleaseInput {
+  runId: number;
+  regionName: string;
+  bbox: BoundingBox;
+  at: Moment;
+}
+
+/** Due and Parked Place counts of a Region (AL4 crawl-run1-fixes 1.4.7). */
+export interface RegionTotals {
+  placesDue: number;
+  placesParked: number;
+}
+
+/** Result of the Failure Record step; `parked` only for a Place Parked after this record. */
+export type FailureStepValue =
+  | { kind: 'recorded'; parked?: ParkedPlace }
+  | { kind: 'taken_over' };
+
 export interface CrawlRepositoryOptions {
   connectionString: string;
   onWrite?: WriteHook;
@@ -279,9 +327,12 @@ export interface CrawlRepository {
   beginRun(input: BeginRunInput): Promise<StoreResult<BeginRunValue>>;
   renewActivity(input: RenewInput): Promise<StoreResult<{ alive: boolean }>>;
   recordListingPage(input: ListingStepInput): Promise<StoreResult<ListingStepValue>>;
+  recordItemFailure(record: FailureRecord): Promise<StoreResult<FailureStepValue>>;
   saveDetails(input: SavePlaceDetailsInput): Promise<StoreResult<SaveReport>>;
+  /** Excludes the Parked Places of the bbox itself. */
   listPlacesDue(query: DueQuery): Promise<StoreResult<DuePlace[]>>;
-  countPlacesDue(input: PlacesDueInput): Promise<StoreResult<number>>;
+  listParkedPlaces(input: { bbox: BoundingBox }): Promise<StoreResult<ParkedPlace[]>>;
+  regionTotals(input: PlacesDueInput): Promise<StoreResult<RegionTotals>>;
   finishRun(input: FinishInput): Promise<StoreResult<{ updated: boolean }>>;
   close(): Promise<void>;
 }

@@ -17,6 +17,7 @@ export type Normalized<T> = { ok: true; value: T } | { ok: false; issues: Failur
 export type Interpretation<T> =
   | { kind: 'data'; value: T }
   | { kind: 'rate_limit'; waitSeconds: number | undefined }
+  | { kind: 'key_quota'; message: string }
   | { kind: 'wikimapia_error'; message: string }
   | { kind: 'unexpected'; issues: FailureIssue[] };
 

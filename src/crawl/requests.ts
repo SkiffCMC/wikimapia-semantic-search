@@ -1,9 +1,12 @@
 /**
  * One Client call with Connection Failure back-off and classification (AL4 1.3
- * `requestWithBackoff`, 1.4.4; U5). Only the Client's own (already redacted) failure `message` is
- * ever passed on; never Wikimapia's raw text, `issues` or a request address.
+ * `requestWithBackoff`, 1.4.4; crawl-run1-fixes AL4 1.4.3). The Client's own (already redacted)
+ * failure `message` is passed on, and for Wikimapia Errors and Key Quota stops also the
+ * Client-redacted `wikimapiaMessage` (AL4 0.1 "Item Failure messages"); never `issues` or a
+ * request address.
  */
 import { CONNECTION_RETRY_WAITS_SECONDS } from '../../contracts/hydration.schema';
+import { oneLine } from './report';
 import type { ClientCall, Gateway, RequestKind, Requested } from './types';
 
 const STOPPED = { kind: 'stopped' } as const;
@@ -37,6 +40,9 @@ export async function requestWithBackoff<T>(
           `Wikimapia kept answering with its rate limit after ${String(failure.attempts)} attempts.`,
         );
         return STOPPED;
+      case 'key_quota_exhausted':
+        gateway.stop('quota_exhausted', failure.message, failure.wikimapiaMessage);
+        return STOPPED;
       case 'configuration':
         gateway.stop('failed', failure.message);
         return STOPPED;
@@ -57,7 +63,11 @@ export async function requestWithBackoff<T>(
         }
         return { kind: 'item_failure', failureKind: 'connection', message: failure.message };
       }
-      case 'wikimapia_error':
+      case 'wikimapia_error': {
+        const text = oneLine(failure.wikimapiaMessage);
+        const message = text === '' ? failure.message : `${failure.message}: ${text}`;
+        return { kind: 'item_failure', failureKind: failure.kind, message };
+      }
       case 'unexpected_response':
       case 'invalid_request':
         return { kind: 'item_failure', failureKind: failure.kind, message: failure.message };

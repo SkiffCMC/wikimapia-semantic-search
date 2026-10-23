@@ -17,9 +17,14 @@ import {
   type RunSummary,
   type TilePlan,
 } from '../../contracts/hydration.schema';
-import type { Tally } from './types';
+import type { SummaryNotes, Tally } from './types';
 
 const REPORT_CHECK_MESSAGE = 'Crawl failed: internal error (report check)';
+
+/** Whitespace runs become one space; the result is trimmed. */
+export function oneLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
 
 function zeroCounts(): RunCounts {
   return { ...ZERO_RUN_COUNTS, itemFailuresByKind: { ...ZERO_RUN_COUNTS.itemFailuresByKind } };
@@ -33,6 +38,7 @@ export function createTally(): Tally {
   let placesNewlyStored = 0;
   let detailsSaved = 0;
   let detailsChanged = 0;
+  let parkedThisRun = 0;
 
   return {
     pageSaved(ids, createdCount, tileFinished) {
@@ -48,8 +54,14 @@ export function createTally(): Tally {
     itemFailure(item, failureKind, message) {
       failures.push({ item, failureKind, message });
     },
+    placeParked() {
+      parkedThisRun += 1;
+    },
     get failures(): readonly ItemFailureReport[] {
       return failures;
+    },
+    get parkedThisRun(): number {
+      return parkedThisRun;
     },
     snapshot(gateway, extra) {
       const counts = zeroCounts();
@@ -68,12 +80,15 @@ export function createTally(): Tally {
       counts.placesStillDue = extra.placesStillDue;
       counts.itemFailures = failures.length;
       for (const failure of failures) counts.itemFailuresByKind[failure.failureKind] += 1;
+      counts.placesParkedThisRun = parkedThisRun;
+      counts.placesParked = extra.placesParked;
+      counts.placesReleased = extra.placesReleased;
       return counts;
     },
   };
 }
 
-export function formatSummaryText(summary: RunSummary): string {
+export function formatSummaryText(summary: RunSummary, notes?: SummaryNotes): string {
   const c = summary.counts;
   const lines: string[] = [];
   if (summary.regionName !== undefined) lines.push(`${SUMMARY_LABELS.regionName}: ${summary.regionName}`);
@@ -100,6 +115,16 @@ export function formatSummaryText(summary: RunSummary): string {
     lines.push(
       `${SUMMARY_LABELS.itemFailures} (${ITEM_FAILURE_LABELS[kind]}): ${String(c.itemFailuresByKind[kind])}`,
     );
+  }
+  lines.push(
+    `${SUMMARY_LABELS.placesParkedThisRun}: ${String(c.placesParkedThisRun)}`,
+    `${SUMMARY_LABELS.placesParked}: ${String(c.placesParked)}`,
+    `${SUMMARY_LABELS.placesReleased}: ${String(c.placesReleased)}`,
+  );
+  const wikimapiaMessage = notes?.wikimapiaMessage;
+  if (summary.outcome === 'quota_exhausted' && wikimapiaMessage !== undefined) {
+    const text = oneLine(wikimapiaMessage);
+    lines.push(`${SUMMARY_LABELS.wikimapiaMessage}: ${text === '' ? '(empty)' : text}`);
   }
   return lines.join('\n');
 }
@@ -132,6 +157,8 @@ export function buildReport(input: {
   failures: readonly ItemFailureReport[];
   runId?: number;
   plan?: TilePlan;
+  wikimapiaMessage?: string;
+  parkedPlacesInRegion?: number;
 }): RunReport {
   const summary: RunSummary = {
     ...(input.regionName !== undefined ? { regionName: input.regionName } : {}),
@@ -144,10 +171,16 @@ export function buildReport(input: {
     outcome: input.outcome,
     ...(input.message !== undefined ? { message: input.message } : {}),
     summary,
-    summaryText: formatSummaryText(summary),
+    summaryText:
+      input.outcome === 'quota_exhausted' && input.wikimapiaMessage !== undefined
+        ? formatSummaryText(summary, { wikimapiaMessage: input.wikimapiaMessage })
+        : formatSummaryText(summary),
     ...(input.plan !== undefined ? { plan: input.plan } : {}),
     itemFailures: [...input.failures],
     ...(input.runId !== undefined ? { runId: input.runId } : {}),
+    ...(input.parkedPlacesInRegion !== undefined
+      ? { parkedPlacesInRegion: input.parkedPlacesInRegion }
+      : {}),
   };
   if (!RunReportSchema.safeParse(report).success) {
     return failedReport(REPORT_CHECK_MESSAGE, input.regionName, input.endedAt);
@@ -155,8 +188,13 @@ export function buildReport(input: {
   return report;
 }
 
-export function plannedReport(plan: TilePlan, at: string): RunReport {
+export function plannedReport(
+  plan: TilePlan,
+  at: string,
+  parkedPlacesInRegion?: number,
+): RunReport {
   return buildReport({
+    ...(parkedPlacesInRegion !== undefined ? { parkedPlacesInRegion } : {}),
     outcome: 'planned',
     regionName: plan.regionName,
     startedAt: at,
