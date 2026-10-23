@@ -9,6 +9,9 @@
  * opened here). Global `fetch` is a rejecting spy: nothing reaches the network. Every result is
  * parsed with `CrawlCommandResultSchema`. Runs that need the Test Database live in
  * `./command.db.test.ts`.
+ *
+ * crawl-run1-fixes (AL4 1.4.10, 1.4.11, U7; AL3 20261022-crawl-run1-fixes-07-command, 2.1 A):
+ * the `--retry-parked` flag, its usage entry and the Dry Run parked line (section C).
  */
 import { parseCrawlArgs, runCrawlCommand } from '../../src/crawl/command';
 import { knownRegionNames, usageMessage } from '../../src/crawl/config';
@@ -569,4 +572,218 @@ describe('runCrawlCommand: never rejects (B8)', () => {
     expect(JSON.stringify(result)).not.toContain('stdout is closed');
     expect(wikimapia.calls).toHaveLength(0);
   });
+});
+
+// ---------------------------------------------------------------------------
+// C. --retry-parked (crawl-run1-fixes AL4 1.4.10, 1.4.11, U7; AL3 07-command 2.1 A)
+// ---------------------------------------------------------------------------
+
+/** The start of the extra Dry Run line (AL4 crawl-run1-fixes 1.4.10, last paragraph). */
+const PARKED_LINE_START = 'Parked places that';
+
+describe('parseCrawlArgs: --retry-parked (C1)', () => {
+  it('alone gives exactly { retryParked: true }', () => {
+    expect(parseCrawlArgs(Object.freeze([CRAWL_COMMAND_OPTIONS.retryParked]))).toStrictEqual({
+      ok: true,
+      request: { retryParked: true },
+    });
+  });
+
+  it('with --region belgrade-small --dry-run gives the three keys, in any order', () => {
+    const expected = { regionName: 'belgrade-small', dryRun: true, retryParked: true };
+    expect(
+      parsedRequest([
+        CRAWL_COMMAND_OPTIONS.region,
+        'belgrade-small',
+        CRAWL_COMMAND_OPTIONS.dryRun,
+        CRAWL_COMMAND_OPTIONS.retryParked,
+      ]),
+    ).toStrictEqual(expected);
+    expect(
+      parsedRequest([
+        CRAWL_COMMAND_OPTIONS.retryParked,
+        CRAWL_COMMAND_OPTIONS.dryRun,
+        CRAWL_COMMAND_OPTIONS.region,
+        'belgrade-small',
+      ]),
+    ).toStrictEqual(expected);
+    expect(
+      parsedRequest([
+        '--',
+        CRAWL_COMMAND_OPTIONS.dryRun,
+        CRAWL_COMMAND_OPTIONS.retryParked,
+        CRAWL_COMMAND_OPTIONS.region,
+        'belgrade-small',
+      ]),
+    ).toStrictEqual(expected);
+  });
+
+  it('with --budget 10 gives requestBudget 10 and retryParked, in any order', () => {
+    const expected = { regionName: 'belgrade-small', requestBudget: 10, retryParked: true };
+    expect(
+      parsedRequest([
+        CRAWL_COMMAND_OPTIONS.region,
+        'belgrade-small',
+        CRAWL_COMMAND_OPTIONS.retryParked,
+        CRAWL_COMMAND_OPTIONS.budget,
+        '10',
+      ]),
+    ).toStrictEqual(expected);
+    expect(
+      parsedRequest([
+        CRAWL_COMMAND_OPTIONS.budget,
+        '10',
+        CRAWL_COMMAND_OPTIONS.region,
+        'belgrade-small',
+        CRAWL_COMMAND_OPTIONS.retryParked,
+      ]),
+    ).toStrictEqual(expected);
+  });
+
+  it('every option together, --retry-parked included, gives every key', () => {
+    expect(
+      parsedRequest([
+        CRAWL_COMMAND_OPTIONS.region,
+        'belgrade-small',
+        CRAWL_COMMAND_OPTIONS.dryRun,
+        CRAWL_COMMAND_OPTIONS.relist,
+        CRAWL_COMMAND_OPTIONS.retryParked,
+        CRAWL_COMMAND_OPTIONS.budget,
+        '20',
+        CRAWL_COMMAND_OPTIONS.minInterval,
+        '2.5',
+        CRAWL_COMMAND_OPTIONS.refreshAge,
+        '7',
+      ]),
+    ).toStrictEqual({
+      regionName: 'belgrade-small',
+      dryRun: true,
+      relist: true,
+      retryParked: true,
+      requestBudget: 20,
+      minRequestIntervalSeconds: 2.5,
+      refreshAgeDays: 7,
+    });
+  });
+
+  it.each([
+    [[CRAWL_COMMAND_OPTIONS.region, 'belgrade-small']],
+    [[CRAWL_COMMAND_OPTIONS.region, 'belgrade-small', CRAWL_COMMAND_OPTIONS.dryRun]],
+    [[CRAWL_COMMAND_OPTIONS.budget, '10']],
+    [[]],
+  ] as const)('%j without the flag has no retryParked key', (argv) => {
+    expect('retryParked' in parsedRequest(argv)).toBe(false);
+  });
+
+  it('a value position is not the flag: --region --retry-parked takes it as the Region text', () => {
+    expect(
+      parsedRequest([CRAWL_COMMAND_OPTIONS.region, CRAWL_COMMAND_OPTIONS.retryParked]),
+    ).toStrictEqual({ regionName: CRAWL_COMMAND_OPTIONS.retryParked });
+  });
+});
+
+describe('parseCrawlArgs and runCrawlCommand: --retry-parked given twice (C2)', () => {
+  const problem = `option ${CRAWL_COMMAND_OPTIONS.retryParked} given twice`;
+
+  it.each([
+    [[CRAWL_COMMAND_OPTIONS.retryParked, CRAWL_COMMAND_OPTIONS.retryParked]],
+    [
+      [
+        CRAWL_COMMAND_OPTIONS.retryParked,
+        CRAWL_COMMAND_OPTIONS.region,
+        'belgrade-small',
+        CRAWL_COMMAND_OPTIONS.retryParked,
+      ],
+    ],
+  ] as const)('%j: the problem names the option', (argv) => {
+    expect(parseCrawlArgs(Object.freeze([...argv]))).toStrictEqual({ ok: false, problem });
+  });
+
+  it('through the command: Failed, exit 1, the problem with the usage, nothing sent', async () => {
+    const { result, output, wikimapia } = await runCommand([
+      CRAWL_COMMAND_OPTIONS.region,
+      'belgrade-small',
+      CRAWL_COMMAND_OPTIONS.retryParked,
+      CRAWL_COMMAND_OPTIONS.dryRun,
+      CRAWL_COMMAND_OPTIONS.retryParked,
+    ]);
+    expect(result.report.outcome).toBe('failed');
+    expect(result.exitCode).toBe(1);
+    expect(result.report.message).toBe(`${problem}. ${USAGE()}`);
+    expect(wikimapia.calls).toHaveLength(0);
+    expect(output).toStrictEqual([result.report.message, ...summaryLines(result)]);
+    expect(output.some((line) => line.startsWith(PARKED_LINE_START))).toBe(false);
+  });
+});
+
+describe('usageMessage: --retry-parked (C3)', () => {
+  it('lists the option in brackets, after [--relist]', () => {
+    const usage = USAGE();
+    const option = `[${CRAWL_COMMAND_OPTIONS.retryParked}]`;
+    const relist = `[${CRAWL_COMMAND_OPTIONS.relist}]`;
+    expect(usage).toContain(option);
+    expect(usage).toContain(relist);
+    expect(usage.indexOf(option)).toBeGreaterThan(usage.indexOf(relist));
+  });
+});
+
+describe('runCrawlCommand: Dry Run without --retry-parked (C4)', () => {
+  it('prints no parked line and keeps the B4 output shape', async () => {
+    const { result, output, wikimapia } = await runCommand(
+      [CRAWL_COMMAND_OPTIONS.region, 'belgrade-small', CRAWL_COMMAND_OPTIONS.dryRun],
+      smallScript(),
+      { env: {} },
+    );
+    expect(result.report.outcome).toBe('planned');
+    expect(result.exitCode).toBe(0);
+    expect(wikimapia.calls).toHaveLength(0);
+    expect('parkedPlacesInRegion' in result.report).toBe(false);
+    expect(output.some((line) => line.startsWith(PARKED_LINE_START))).toBe(false);
+
+    const lines = summaryLines(result);
+    expect(output).toHaveLength(1 + 4 + lines.length);
+    expect(output[0]).toBe('Region belgrade-small: 4 tiles');
+    expect(output.slice(1, 5)).toStrictEqual([
+      'Tile 1: west 20.452, south 44.814, east 20.457, north 44.819',
+      'Tile 2: west 20.457, south 44.814, east 20.462, north 44.819',
+      'Tile 3: west 20.452, south 44.819, east 20.457, north 44.82',
+      'Tile 4: west 20.457, south 44.819, east 20.462, north 44.82',
+    ]);
+    expect(output.slice(5)).toStrictEqual(lines);
+  });
+});
+
+describe('runCrawlCommand: Dry Run with --retry-parked and no database (C5)', () => {
+  it.each([
+    ['without DATABASE_URL', {}],
+    ['with an empty DATABASE_URL', { DATABASE_URL: '' }],
+    ['with an unreachable DATABASE_URL', { DATABASE_URL: 'postgres://nobody:none@127.0.0.1:1/none' }],
+  ] as const)(
+    '%s: ends Failed, exit 1, sends nothing, no parked line, no secrets',
+    async (_label, env) => {
+      const { result, output, wikimapia } = await runCommand(
+        [
+          CRAWL_COMMAND_OPTIONS.region,
+          'belgrade-small',
+          CRAWL_COMMAND_OPTIONS.dryRun,
+          CRAWL_COMMAND_OPTIONS.retryParked,
+        ],
+        smallScript(),
+        { env },
+      );
+      expect(result.report.outcome).toBe('failed');
+      expect(result.exitCode).toBe(1);
+      expect(wikimapia.calls).toHaveLength(0);
+      // The Run itself failed (the parked count cannot be read), not the command line.
+      expect(result.report.message).not.toContain('unknown option');
+      expect(result.report.message).not.toContain(USAGE());
+      expect('parkedPlacesInRegion' in result.report).toBe(false);
+      expect(output.some((line) => line.startsWith(PARKED_LINE_START))).toBe(false);
+      expectNoSecrets(output.join('\n'));
+      expectNoSecrets(JSON.stringify(result));
+      expect(output.join('\n')).not.toContain('nobody:none');
+      expect(JSON.stringify(result)).not.toContain('nobody:none');
+    },
+    60_000,
+  );
 });

@@ -563,7 +563,9 @@ describe('allow-list construction (AC-16)', () => {
     Object.assign(raw, { extraItem: 'top' });
     Object.assign(raw.location, { extraItem: 'loc', street_id: '331907' });
     Object.assign(at(raw.polygon, 0), { extraItem: 'pt' });
-    Object.assign(at(raw.tags, 0), { extraItem: 'tag', pl: 1 });
+    const rawTags = raw.tags;
+    if (rawTags === null || rawTags === undefined) throw new Error('fixture has no Tags');
+    Object.assign(at(rawTags, 0), { extraItem: 'tag', pl: 1 });
     const mateja = at(raw.comments, 0);
     Object.assign(mateja, { extraItem: 'comment', urlhtml: 'c' });
     const serbia = at(mateja.replies, 0);
@@ -802,5 +804,119 @@ describe('output gate: success values pass the contract schemas', () => {
     raw.parent_id = '7291521';
     const place = okValue(normalizePlaceDetails(raw));
     expect(PlaceDetailsSchema.safeParse(place).success).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Missing or null Tags (crawl-run1-fixes AL4 1.4.1; AC-1 .. AC-3, AC-5)
+// ---------------------------------------------------------------------------
+
+describe('missing or null Tags read as an empty list (crawl-run1-fixes AL4 1.4.1)', () => {
+  const NO_TAGS_FIXTURES: readonly FixtureName[] = [
+    'getbyid-1391132-no-tags.json',
+    'getbyid-8918979-no-tags.json',
+  ];
+
+  it('the recorded fixtures really carry no tags item (precondition)', () => {
+    for (const name of NO_TAGS_FIXTURES) expect(rawDetails(name)).not.toHaveProperty('tags');
+  });
+
+  it.each(NO_TAGS_FIXTURES)(
+    '%s succeeds with tags [] and passes PlaceDetailsSchema',
+    (name) => {
+      const place = okValue(normalizePlaceDetails(rawDetails(name)));
+      expect(place.tags).toStrictEqual([]);
+      expect(PlaceDetailsSchema.safeParse(place).success).toBe(true);
+    },
+  );
+
+  it('1391132 (AC-1): recorded values kept, empty wikipedia gives no wikipediaUrl', () => {
+    const raw = rawDetails('getbyid-1391132-no-tags.json');
+    expect(raw.wikipedia).toBe('');
+    const place = okValue(normalizePlaceDetails(raw));
+    expect(place.placeId).toBe(1391132);
+    expect(place.title).toBe("Kolarac - Peoples' University and Concert Hall");
+    expect(place.description).toBe(raw.description);
+    expect(place.tags).toStrictEqual([]);
+    expect([place.isBuilding, place.isRegion, place.isDeleted]).toStrictEqual([true, false, false]);
+    expect(place).not.toHaveProperty('parentPlaceId');
+    expect(place).not.toHaveProperty('wikipediaUrl');
+    expect(place.outline).toHaveLength(16);
+    expect(place.outline).toStrictEqual(raw.polygon.map((p) => ({ lon: p.x, lat: p.y })));
+    expect(place.comments).toStrictEqual([]);
+    expect(keys(place)).toStrictEqual(DETAILS_REQUIRED_KEYS);
+  });
+
+  it('8918979 (AC-2): no tags and no wikipedia item, title letters unchanged', () => {
+    const raw = rawDetails('getbyid-8918979-no-tags.json');
+    expect(raw).not.toHaveProperty('wikipedia');
+    const place = okValue(normalizePlaceDetails(raw));
+    expect(place.placeId).toBe(8918979);
+    expect(place.title).toBe('Zoran Đinđić');
+    expect(place.description).toBe('Monument in Belgrade.');
+    expect(place.tags).toStrictEqual([]);
+    expect([place.isBuilding, place.isRegion, place.isDeleted]).toStrictEqual([
+      false,
+      false,
+      false,
+    ]);
+    expect(place).not.toHaveProperty('parentPlaceId');
+    expect(place).not.toHaveProperty('wikipediaUrl');
+    expect(place.outline).toHaveLength(4);
+    expect(place.location.street).toBe('Trg Republike');
+    expect(place.comments).toStrictEqual([]);
+    expect(keys(place)).toStrictEqual(DETAILS_REQUIRED_KEYS);
+  });
+
+  it('8918979 (AC-3): tags missing, null and [] give strictly equal Place Details', () => {
+    const missing = rawDetails('getbyid-8918979-no-tags.json');
+    const nullTags = rawDetails('getbyid-8918979-no-tags.json');
+    nullTags.tags = null;
+    const emptyTags = rawDetails('getbyid-8918979-no-tags.json');
+    emptyTags.tags = [];
+
+    const fromMissing = okValue(normalizePlaceDetails(missing));
+    const fromNull = okValue(normalizePlaceDetails(nullTags));
+    const fromEmpty = okValue(normalizePlaceDetails(emptyTags));
+    expect(fromMissing.tags).toStrictEqual([]);
+    expect(fromNull).toStrictEqual(fromMissing);
+    expect(fromEmpty).toStrictEqual(fromMissing);
+  });
+
+  it('tags explicitly undefined is the same as missing', () => {
+    const missing = okValue(normalizePlaceDetails(rawDetails('getbyid-8918979-no-tags.json')));
+    const raw = rawDetails('getbyid-8918979-no-tags.json');
+    raw.tags = undefined;
+    expect(okValue(normalizePlaceDetails(raw))).toStrictEqual(missing);
+  });
+
+  it('1381893 with its Tags removed or set to null gives tags [] and is otherwise unchanged', () => {
+    const recorded = okValue(normalizePlaceDetails(rawDetails('getbyid-1381893.json')));
+    const removed = rawDetails('getbyid-1381893.json');
+    Reflect.deleteProperty(removed, 'tags');
+    const nulled = rawDetails('getbyid-1381893.json');
+    nulled.tags = null;
+    for (const raw of [removed, nulled]) {
+      const place = okValue(normalizePlaceDetails(raw));
+      expect(place).toStrictEqual({ ...recorded, tags: [] });
+    }
+  });
+
+  it('a fixture with Tags still yields its Tags unchanged', () => {
+    expect(okValue(normalizePlaceDetails(rawDetails('getbyid-1381893.json'))).tags).toStrictEqual(
+      [{ id: 194, title: 'park' }],
+    );
+    expect(okValue(normalizePlaceDetails(rawDetails('getbyid-62587.json'))).tags).toStrictEqual([
+      { id: 44926, title: 'historic town square' },
+      { id: 46360, title: 'town square' },
+    ]);
+  });
+
+  it('the input is not mutated (no tags item is added to the raw object)', () => {
+    const raw = rawDetails('getbyid-8918979-no-tags.json');
+    const before = structuredClone(raw);
+    okValue(normalizePlaceDetails(raw));
+    expect(raw).toStrictEqual(before);
+    expect(raw).not.toHaveProperty('tags');
   });
 });

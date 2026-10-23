@@ -233,7 +233,7 @@ describe('redactSecrets with an empty key (AL3 2.2 step 3 clarification)', () =>
 });
 
 // ---------------------------------------------------------------------------
-// 6. redactFailure, all six kinds
+// 6. redactFailure, all seven kinds
 // ---------------------------------------------------------------------------
 
 const SECRET_FAILURES: readonly [string, ClientFailure][] = [
@@ -274,6 +274,15 @@ const SECRET_FAILURES: readonly [string, ClientFailure][] = [
     },
   ],
   [
+    'key_quota_exhausted',
+    {
+      kind: 'key_quota_exhausted',
+      message: `Wikimapia key quota exhausted (code 1004): Key ${K} limit reached at ${KEYED_URL}`,
+      wikimapiaMessage: `Key ${K} limit reached at ${KEYED_HTTPS_URL}`,
+      code: 1004,
+    },
+  ],
+  [
     'connection with status',
     { kind: 'connection', message: `HTTP 502 from ${KEYED_URL}`, status: 502 },
   ],
@@ -295,13 +304,14 @@ const SECRET_FAILURES: readonly [string, ClientFailure][] = [
 ];
 
 describe('redactFailure removes secrets from every kind (AL4 1.4.9, AC-36)', () => {
-  it('the table covers all six failure kinds', () => {
+  it('the table covers all seven failure kinds', () => {
     expect(new Set(SECRET_FAILURES.map(([, f]) => f.kind))).toStrictEqual(
       new Set([
         'configuration',
         'invalid_request',
         'rate_limit_exhausted',
         'wikimapia_error',
+        'key_quota_exhausted',
         'connection',
         'unexpected_response',
       ]),
@@ -451,6 +461,15 @@ const CLEAN_FAILURES: readonly [string, ClientFailure][] = [
     },
   ],
   [
+    'key_quota_exhausted',
+    {
+      kind: 'key_quota_exhausted',
+      message: 'Wikimapia key quota exhausted (code 1004): Key limit has been reached',
+      wikimapiaMessage: 'Key limit has been reached',
+      code: 1004,
+    },
+  ],
+  [
     'connection with status',
     { kind: 'connection', message: 'Wikimapia answered HTTP 503', status: 503 },
   ],
@@ -493,5 +512,69 @@ describe('redactFailure passes clean failures through verbatim (AC-32)', () => {
     const result = redactFailure(input, K);
     expect(result).toStrictEqual(input);
     expect(ClientFailureSchema.safeParse(result).success).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. Key Quota Exhausted (crawl-run1-fixes AL4 1.4.2; AC-14)
+// ---------------------------------------------------------------------------
+
+describe('redactFailure on key_quota_exhausted (crawl-run1-fixes AL4 1.4.2, AC-14)', () => {
+  it('removes the bare key from message and wikimapiaMessage, keeps kind and code 1004', () => {
+    const input: ClientFailure = {
+      kind: 'key_quota_exhausted',
+      message: `Wikimapia key quota exhausted (code 1004): Key ${K} limit has been reached`,
+      wikimapiaMessage: `Key ${K} limit has been reached`,
+      code: 1004,
+    };
+    const result = redactFailure(input, K);
+    expect(result).toStrictEqual({
+      kind: 'key_quota_exhausted',
+      message: `Wikimapia key quota exhausted (code 1004): Key ${KEY_REMOVED} limit has been reached`,
+      wikimapiaMessage: `Key ${KEY_REMOVED} limit has been reached`,
+      code: 1004,
+    });
+  });
+
+  it('removes keyed request addresses from message and wikimapiaMessage', () => {
+    const input: ClientFailure = {
+      kind: 'key_quota_exhausted',
+      message: `Wikimapia key quota exhausted (code 1004): Limit reached for ${KEYED_HTTPS_URL}`,
+      wikimapiaMessage: `Limit reached for ${KEYED_HTTP_URL}`,
+      code: 1004,
+    };
+    const result = redactFailure(input, K);
+    expect(result).toStrictEqual({
+      kind: 'key_quota_exhausted',
+      message: `Wikimapia key quota exhausted (code 1004): Limit reached for ${ADDRESS_REMOVED}`,
+      wikimapiaMessage: `Limit reached for ${ADDRESS_REMOVED}`,
+      code: 1004,
+    });
+    expectNoSecret(result);
+  });
+
+  it('adds or drops no keys and returns a new object', () => {
+    const input: ClientFailure = {
+      kind: 'key_quota_exhausted',
+      message: `quota ${K}`,
+      wikimapiaMessage: `?key=${K}`,
+      code: 1004,
+    };
+    const result = redactFailure(input, K);
+    expect(Object.keys(result).sort()).toStrictEqual(['code', 'kind', 'message', 'wikimapiaMessage']);
+    expect(result).not.toBe(input);
+    expect(ClientFailureSchema.safeParse(result).success).toBe(true);
+  });
+
+  it('an empty wikimapiaMessage stays empty', () => {
+    const input: ClientFailure = {
+      kind: 'key_quota_exhausted',
+      message: 'Wikimapia key quota exhausted (code 1004)',
+      wikimapiaMessage: '',
+      code: 1004,
+    };
+    const result = redactFailure(input, K);
+    expect(result).toStrictEqual(input);
+    expect(result).not.toBe(input);
   });
 });

@@ -12,9 +12,27 @@
  * Knex query builder on a tracked `testDb()` handle (table names from `CRAWL_TABLES`, no raw
  * SQL). Every store result is parsed with its contract result schema before asserting. Every
  * store, setup and Knex handle is closed in `afterEach`/`afterAll`.
+ *
+ * Extended by feature `crawl-run1-fixes` (AL4 crawl-run1-fixes 1.4.12, decision 5; AL3 routing
+ * 20261022-crawl-run1-fixes-02-schema, section 2.1 C): the amended counts carry the three Parking
+ * counts, and old Run Records stored without them read back with 0 through the public store.
+ *
+ * Extended by feature `crawl-run1-fixes` (AL4 crawl-run1-fixes 1.4.8; AL3 routing
+ * 20261022-crawl-run1-fixes-03-failure-records, section 2.1 C): `createCrawlStore` is typed
+ * `CreateFailureAwareCrawlStoreFn`; `readFailureRecords` and `readExplicitRetries` join the
+ * invalid-input, not-configured and unreachable groups and return contract keys only (11).
+ * The Failure Records for 11 are written through the repository's `recordItemFailure` on a Run
+ * started with `beginRun`.
+ *
+ * Extended by feature `crawl-run1-fixes` (AL4 crawl-run1-fixes 1.4.6, 1.4.7; AL3 routing
+ * 20261022-crawl-run1-fixes-04-parking, section 2.1 E): `listPlacesDueForDetails` omits the
+ * Parked Places of the input bbox (2b). Places are Parked by recording 3 Wikimapia Errors through
+ * the repository's `recordItemFailure`; `beginRun` inputs carry `retryParked: false`.
  */
 import type { Knex } from 'knex';
+import { z } from 'zod';
 import { createCrawlStore } from '../../src/db/crawl-store';
+import { openCrawlRepository } from '../../src/db/crawl-repository';
 import { readCurrentPass } from '../../src/db/crawl-progress';
 import { createPlaceStore } from '../../src/db/place-store';
 import { createSchemaSetup } from '../../src/db/schema-setup';
@@ -42,8 +60,6 @@ import {
   ZERO_RUN_COUNTS,
   type CrawlProgressInput,
   type CrawlProgressView,
-  type CrawlStore,
-  type CreateCrawlStoreFn,
   type DuePlace,
   type PlacesDueInput,
   type RunCounts,
@@ -60,13 +76,23 @@ import {
   requireTestDatabaseUrl,
 } from '../../contracts/storage.support';
 import {
+  ExplicitRetriesResultSchema,
+  ExplicitRetrySchema,
+  FailureRecordSchema,
+  FailureRecordsResultSchema,
+  type CreateFailureAwareCrawlStoreFn,
+  type ExplicitRetriesInput,
+  type FailureRecordsInput,
+} from '../../contracts/crawl-run1-fixes.schema';
+import {
   BoundingBoxSchema,
   type PlaceDetails,
   type PlaceSummary,
 } from '../../contracts/wikimapia-client.schema';
 
 // Compile-time check: the entry point has the contract's signature.
-const create: CreateCrawlStoreFn = createCrawlStore;
+const create: CreateFailureAwareCrawlStoreFn = createCrawlStore;
+type CrawlStore = ReturnType<CreateFailureAwareCrawlStoreFn>;
 
 const NOT_CONFIGURED_MESSAGE =
   'Place Store is not configured: connection string is missing or unusable';
@@ -149,6 +175,14 @@ async function progressResult(store: CrawlStore, input: CrawlProgressInput) {
   return CrawlProgressResultSchema.parse(await settle(store.readCrawlProgress(input)));
 }
 
+async function failureRecordsResult(store: CrawlStore, input: FailureRecordsInput) {
+  return FailureRecordsResultSchema.parse(await settle(store.readFailureRecords(input)));
+}
+
+async function explicitRetriesResult(store: CrawlStore, input: ExplicitRetriesInput) {
+  return ExplicitRetriesResultSchema.parse(await settle(store.readExplicitRetries(input)));
+}
+
 async function progress(regionName: string): Promise<CrawlProgressView> {
   return okValue(await progressResult(crawlStore, { regionName }));
 }
@@ -224,7 +258,37 @@ const NONZERO_COUNTS: RunCounts = RunCountsSchema.parse({
     invalid_request: 0,
     invalid_data: 0,
   },
+  placesParkedThisRun: 1,
+  placesParked: 2,
+  placesReleased: 1,
 });
+
+type ParkingCountKey = 'placesParkedThisRun' | 'placesParked' | 'placesReleased';
+type LegacyRunCounts = Omit<RunCounts, ParkingCountKey>;
+
+/** A hydration-era counts object: the given counts without the three Parking counts. */
+function legacyOf(counts: RunCounts): LegacyRunCounts {
+  return {
+    wikimapiaRequests: counts.wikimapiaRequests,
+    listingRequests: counts.listingRequests,
+    detailsRequests: counts.detailsRequests,
+    rateLimitWaits: counts.rateLimitWaits,
+    rateLimitWaitSeconds: counts.rateLimitWaitSeconds,
+    listingPagesSaved: counts.listingPagesSaved,
+    tilesFinished: counts.tilesFinished,
+    tilesUnfinished: counts.tilesUnfinished,
+    placesListed: counts.placesListed,
+    placesNewlyStored: counts.placesNewlyStored,
+    detailsSaved: counts.detailsSaved,
+    detailsChanged: counts.detailsChanged,
+    placesStillDue: counts.placesStillDue,
+    itemFailures: counts.itemFailures,
+    itemFailuresByKind: { ...counts.itemFailuresByKind },
+  };
+}
+
+const LEGACY_COUNTS: LegacyRunCounts = legacyOf(NONZERO_COUNTS);
+const LEGACY_ZERO_COUNTS: LegacyRunCounts = legacyOf(ZERO_RUN_COUNTS);
 
 interface RunSeed {
   run_id: number;
@@ -515,6 +579,146 @@ describe('listPlacesDueForDetails', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 2b. listPlacesDueForDetails omits Parked Places (crawl-run1-fixes 1.4.7, AC-35 store side)
+// ---------------------------------------------------------------------------
+
+/**
+ * Parks each of `placeIds` with 3 Wikimapia Errors in one finished Run of `test-one` (the Places
+ * must be seeded first: the Parking read joins `places`). Checks that the third record of each
+ * Place returns `parked`.
+ */
+async function parkPlaces(...placeIds: number[]): Promise<void> {
+  const repo = openCrawlRepository({ connectionString: requireTestDatabaseUrl() });
+  try {
+    const begun = StartedRunResultSchema.parse(
+      await repo.beginRun({
+        regionName: 'test-one',
+        bbox: SMALL_BBOX,
+        tileSize: { width: 0.005, height: 0.005 },
+        tileCount: 1,
+        relist: false,
+        startedAt: RUN_START,
+        abandonBefore: '2026-10-22T08:00:00Z',
+        counts: ZERO_RUN_COUNTS,
+        retryParked: false,
+      }),
+    );
+    const runId = begun.value.runId;
+    for (const placeId of placeIds) {
+      for (const [i, failedAt] of ['2026-10-22T09:00:10Z', '2026-10-22T09:00:20Z', '2026-10-22T09:00:30Z'].entries()) {
+        const result = RecordedResultSchema.parse(
+          await repo.recordItemFailure({
+            runId,
+            item: { kind: 'place_details', placeId },
+            failureKind: 'wikimapia_error',
+            message: `Place ${String(placeId)}: Wikimapia error: synthetic`,
+            failedAt,
+          }),
+        );
+        if (i === 2) {
+          expect(result.value.parked).toStrictEqual({ placeId, failureKind: 'wikimapia_error' });
+        }
+      }
+    }
+    const finished = z
+      .object({ ok: z.literal(true), value: z.object({ updated: z.literal(true) }) })
+      .safeParse(
+        await repo.finishRun({
+          runId,
+          status: 'completed',
+          endedAt: '2026-10-22T09:01:00Z',
+          counts: ZERO_RUN_COUNTS,
+        }),
+      );
+    expect(finished.success).toBe(true);
+  } finally {
+    await repo.close();
+  }
+}
+
+describe('listPlacesDueForDetails omits Parked Places', () => {
+  const p = CENTRAL_BELGRADE_POINT;
+  const CUTOFF = '2026-09-22T09:00:00Z';
+
+  async function seedSmallR1(): Promise<void> {
+    await seedSummaries(
+      summary(900, p.lon, p.lat),
+      summary(300, 20.452, 44.82),
+      summary(950, 20.47, 44.817),
+    );
+    await seedDetails(await clientDetails('getbyid-62587.json'), '2026-08-01T00:00:00Z');
+    await seedDetails(syntheticPlaceDetails(700, p.lon, p.lat), '2026-07-01T00:00:00Z');
+  }
+
+  it('a Parked Place of the bbox is omitted; the rest keep Details Order and pass the result schema', async () => {
+    await seedSmallR1();
+    await parkPlaces(900, 700);
+    const result = await due(crawlStore, { bbox: SMALL_BBOX, dueBefore: CUTOFF });
+    const value = okValue(result);
+    expect(value).toStrictEqual({
+      places: [{ placeId: 300 }, { placeId: 62587, detailsFetchedAt: '2026-08-01T00:00:00Z' }],
+    });
+    expect(PlacesDueResultSchema.safeParse(result).success).toBe(true);
+  });
+
+  it('a Parked Place outside the input bbox changes nothing', async () => {
+    await seedSmallR1();
+    await parkPlaces(950);
+    expect(okValue(await due(crawlStore, { bbox: SMALL_BBOX, dueBefore: CUTOFF })).places).toStrictEqual([
+      { placeId: 300 },
+      { placeId: 900 },
+      { placeId: 700, detailsFetchedAt: '2026-07-01T00:00:00Z' },
+      { placeId: 62587, detailsFetchedAt: '2026-08-01T00:00:00Z' },
+    ]);
+  });
+
+  it('a Region whose only due Place is Parked gives { places: [] }', async () => {
+    await seedSummaries(summary(900, p.lon, p.lat));
+    await parkPlaces(900);
+    expect(okValue(await due(crawlStore, { bbox: SMALL_BBOX, dueBefore: RUN_START }))).toStrictEqual({
+      places: [],
+    });
+  });
+
+  it('two failures only (not Parked) keep the Place due', async () => {
+    await seedSummaries(summary(900, p.lon, p.lat));
+    const repo = openCrawlRepository({ connectionString: requireTestDatabaseUrl() });
+    try {
+      const begun = StartedRunResultSchema.parse(
+        await repo.beginRun({
+          regionName: 'test-one',
+          bbox: SMALL_BBOX,
+          tileSize: { width: 0.005, height: 0.005 },
+          tileCount: 1,
+          relist: false,
+          startedAt: RUN_START,
+          abandonBefore: '2026-10-22T08:00:00Z',
+          counts: ZERO_RUN_COUNTS,
+          retryParked: false,
+        }),
+      );
+      for (const failedAt of ['2026-10-22T09:00:10Z', '2026-10-22T09:00:20Z']) {
+        const result = RecordedResultSchema.parse(
+          await repo.recordItemFailure({
+            runId: begun.value.runId,
+            item: { kind: 'place_details', placeId: 900 },
+            failureKind: 'wikimapia_error',
+            message: 'Place 900: Wikimapia error: synthetic',
+            failedAt,
+          }),
+        );
+        expect(Object.hasOwn(result.value, 'parked')).toBe(false);
+      }
+    } finally {
+      await repo.close();
+    }
+    expect(okValue(await due(crawlStore, { bbox: SMALL_BBOX, dueBefore: RUN_START }))).toStrictEqual({
+      places: [{ placeId: 900 }],
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 3. Invalid input: invalid_data, validated before any DB access
 // ---------------------------------------------------------------------------
 
@@ -532,6 +736,21 @@ function dueWithExtraKey(): PlacesDueInput {
 
 function progressWithExtraKey(): CrawlProgressInput {
   const input = { regionName: 'test-one', extra: 1 };
+  return input;
+}
+
+function failureRecordsWithExtraKey(): FailureRecordsInput {
+  const input = { placeId: 1, extra: 'synthetic-extra-value' };
+  return input;
+}
+
+function failureRecordsWithBothKeys(): FailureRecordsInput {
+  const input = { placeId: 1, runId: 1 };
+  return input;
+}
+
+function retriesWithExtraKey(): ExplicitRetriesInput {
+  const input = { regionName: 'test-one', extra: 'synthetic-extra-value' };
   return input;
 }
 
@@ -566,6 +785,44 @@ const INVALID_CALLS: readonly InvalidCall[] = [
     label: 'extra key on the progress input',
     run: (store) => progressResult(store, progressWithExtraKey()),
   },
+  {
+    label: 'readFailureRecords {}',
+    run: (store) => failureRecordsResult(store, {} as never),
+  },
+  {
+    label: 'readFailureRecords placeId 0',
+    run: (store) => failureRecordsResult(store, { placeId: 0 }),
+  },
+  {
+    label: 'readFailureRecords runId -1',
+    run: (store) => failureRecordsResult(store, { runId: -1 }),
+  },
+  {
+    label: 'readFailureRecords with both placeId and runId',
+    run: (store) => failureRecordsResult(store, failureRecordsWithBothKeys()),
+  },
+  {
+    label: 'readFailureRecords placeId 1.5',
+    run: (store) => failureRecordsResult(store, { placeId: 1.5 }),
+  },
+  {
+    label: 'extra key on the failure records input',
+    run: (store) => failureRecordsResult(store, failureRecordsWithExtraKey()),
+  },
+  ...['Test-One', ''].map(
+    (regionName): InvalidCall => ({
+      label: `readExplicitRetries regionName ${JSON.stringify(regionName)}`,
+      run: (store) => explicitRetriesResult(store, { regionName }),
+    }),
+  ),
+  {
+    label: 'readExplicitRetries {}',
+    run: (store) => explicitRetriesResult(store, {} as never),
+  },
+  {
+    label: 'extra key on the explicit retries input',
+    run: (store) => explicitRetriesResult(store, retriesWithExtraKey()),
+  },
 ];
 
 describe('invalid input is invalid_data and never reaches the database', () => {
@@ -594,6 +851,20 @@ describe('invalid input is invalid_data and never reaches the database', () => {
     expect(JSON.stringify(failure)).not.toContain('yesterday');
   });
 
+  it('the failures of the new reads do not echo the bad values', async () => {
+    const texts = [
+      JSON.stringify(failureOf(await failureRecordsResult(crawlStore, { placeId: 1.5 }))),
+      JSON.stringify(failureOf(await failureRecordsResult(crawlStore, failureRecordsWithExtraKey()))),
+      JSON.stringify(failureOf(await explicitRetriesResult(crawlStore, { regionName: 'Test-One' }))),
+      JSON.stringify(failureOf(await explicitRetriesResult(crawlStore, retriesWithExtraKey()))),
+    ];
+    for (const text of texts) {
+      expect(text).not.toContain('1.5');
+      expect(text).not.toContain('Test-One');
+      expect(text).not.toContain('synthetic-extra-value');
+    }
+  });
+
   it('invalid input leaves the database untouched', async () => {
     for (const call of INVALID_CALLS) await call.run(crawlStore);
     expect(await progress('test-one')).toStrictEqual({ regionName: 'test-one', passes: [], runs: [] });
@@ -611,6 +882,16 @@ describe('a not-configured store', () => {
     expect(listFailure).toStrictEqual({ kind: 'store_unavailable', message: NOT_CONFIGURED_MESSAGE });
     const readFailure = failureOf(await progressResult(store, { regionName: 'test-one' }));
     expect(readFailure).toStrictEqual({ kind: 'store_unavailable', message: NOT_CONFIGURED_MESSAGE });
+  });
+
+  it('gives store_unavailable with the fixed message for readFailureRecords and readExplicitRetries', async () => {
+    const store = trackStore(create({ connectionString: '' }));
+    const notConfigured = { kind: 'store_unavailable', message: NOT_CONFIGURED_MESSAGE };
+    expect(failureOf(await failureRecordsResult(store, { placeId: 900 }))).toStrictEqual(notConfigured);
+    expect(failureOf(await failureRecordsResult(store, { runId: 1 }))).toStrictEqual(notConfigured);
+    expect(failureOf(await explicitRetriesResult(store, { regionName: 'test-one' }))).toStrictEqual(
+      notConfigured,
+    );
   });
 
   it('close() resolves, twice', async () => {
@@ -642,6 +923,23 @@ describe('an unreachable database', () => {
       const readFailure = failureOf(await progressResult(store, { regionName: 'test-one' }));
       expect(readFailure.kind).toBe('store_unavailable');
       expectNoSecrets(JSON.stringify(readFailure));
+    },
+    UNREACHABLE_TIMEOUT_MS,
+  );
+
+  it(
+    'gives store_unavailable for readFailureRecords and readExplicitRetries without password or connection string',
+    async () => {
+      const store = trackStore(create({ connectionString: UNREACHABLE_DATABASE_URL }));
+      const inputs: FailureRecordsInput[] = [{ placeId: 900 }, { runId: 1 }];
+      for (const input of inputs) {
+        const failure = failureOf(await failureRecordsResult(store, input));
+        expect(failure.kind).toBe('store_unavailable');
+        expectNoSecrets(JSON.stringify(failure));
+      }
+      const retriesFailure = failureOf(await explicitRetriesResult(store, { regionName: 'test-one' }));
+      expect(retriesFailure.kind).toBe('store_unavailable');
+      expectNoSecrets(JSON.stringify(retriesFailure));
     },
     UNREACHABLE_TIMEOUT_MS,
   );
@@ -821,6 +1119,127 @@ describe('readCrawlProgress read-back gate', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 8b. Old Run Records without the Parking counts (AL4 crawl-run1-fixes 1.4.12, decision 5)
+// ---------------------------------------------------------------------------
+
+const StoredCountsRowsSchema = z.array(
+  z.object({ counts: z.record(z.string(), z.unknown()) }),
+);
+
+/** The raw stored `counts` jsonb of one Run, read with the test's own Knex handle. */
+async function storedCounts(runId: number): Promise<Record<string, unknown>> {
+  const result: unknown = await testDb()(CRAWL_TABLES.runs).where({ run_id: runId }).select('counts');
+  const first = StoredCountsRowsSchema.parse(result)[0];
+  if (first === undefined) throw new Error(`no crawl_runs row ${String(runId)}`);
+  return first.counts;
+}
+
+async function onlyRunCounts(): Promise<RunCounts> {
+  const view = await progress('test-one');
+  expect(view.runs).toHaveLength(1);
+  const run = view.runs[0];
+  if (run === undefined) throw new Error('expected one Run Record');
+  return run.counts;
+}
+
+describe('readCrawlProgress of old Run Records (legacy counts)', () => {
+  it('a hydration-era counts object reads back with the three Parking counts as 0', async () => {
+    await insertRows(CRAWL_TABLES.runs, [{ ...RUNS.one1, counts: JSON.stringify(LEGACY_COUNTS) }]);
+    expect(await onlyRunCounts()).toStrictEqual({
+      ...LEGACY_COUNTS,
+      placesParkedThisRun: 0,
+      placesParked: 0,
+      placesReleased: 0,
+    });
+  });
+
+  it('the whole view of a legacy Run Record equals the stored record with the defaults filled', async () => {
+    await insertRows(CRAWL_TABLES.runs, [{ ...RUNS.one1, counts: JSON.stringify(LEGACY_COUNTS) }]);
+    const view = await progress('test-one');
+    expect(CrawlProgressViewSchema.safeParse(view).success).toBe(true);
+    expect(view.runs).toStrictEqual([
+      {
+        runId: RUN_1,
+        regionName: 'test-one',
+        status: 'completed',
+        startedAt: '2026-10-01T08:00:00Z',
+        endedAt: '2026-10-01T09:00:00Z',
+        lastActivity: '2026-10-01T09:00:00Z',
+        counts: { ...LEGACY_COUNTS, placesParkedThisRun: 0, placesParked: 0, placesReleased: 0 },
+      },
+    ]);
+  });
+
+  it.each([
+    [
+      'only placesReleased',
+      { placesReleased: 2 },
+      { placesParkedThisRun: 0, placesParked: 0, placesReleased: 2 },
+    ],
+    [
+      'only placesParked',
+      { placesParked: 3 },
+      { placesParkedThisRun: 0, placesParked: 3, placesReleased: 0 },
+    ],
+    [
+      'placesParkedThisRun and placesParked',
+      { placesParkedThisRun: 1, placesParked: 1 },
+      { placesParkedThisRun: 1, placesParked: 1, placesReleased: 0 },
+    ],
+  ] as const)('a record with %s keeps the stored values and defaults the others to 0', async (_label, stored, expected) => {
+    await insertRows(CRAWL_TABLES.runs, [
+      { ...RUNS.one1, counts: JSON.stringify({ ...LEGACY_COUNTS, ...stored }) },
+    ]);
+    expect(await onlyRunCounts()).toStrictEqual({ ...LEGACY_COUNTS, ...expected });
+  });
+
+  it('stored values win: a complete new-style record reads back exactly as stored', async () => {
+    await insertRows(CRAWL_TABLES.runs, [RUNS.one1]);
+    expect(await onlyRunCounts()).toStrictEqual(NONZERO_COUNTS);
+  });
+
+  const malformedLegacy: [string, string][] = [
+    ['a negative count', JSON.stringify({ ...LEGACY_COUNTS, placesListed: -1 })],
+    [
+      'wikimapiaRequests not the sum of its parts',
+      JSON.stringify({ ...LEGACY_ZERO_COUNTS, wikimapiaRequests: 1 }),
+    ],
+    [
+      'itemFailures not the sum by kind',
+      JSON.stringify({ ...LEGACY_ZERO_COUNTS, itemFailures: 1 }),
+    ],
+    ['a negative Parking count', JSON.stringify({ ...LEGACY_COUNTS, placesReleased: -1 })],
+    [
+      'placesParkedThisRun 1 with placesParked 0',
+      JSON.stringify({ ...LEGACY_COUNTS, placesParkedThisRun: 1, placesParked: 0 }),
+    ],
+    [
+      'placesParkedThisRun 1 with placesParked defaulted',
+      JSON.stringify({ ...LEGACY_COUNTS, placesParkedThisRun: 1 }),
+    ],
+    ['an unknown extra key', JSON.stringify({ ...LEGACY_COUNTS, requests: 0 })],
+    ['a JSON array', JSON.stringify([LEGACY_COUNTS])],
+    ['a JSON null', JSON.stringify(null)],
+  ];
+
+  it.each(malformedLegacy)(
+    'a legacy record with %s still resolves store_unavailable, never rejects',
+    async (_label, counts) => {
+      await insertRows(CRAWL_TABLES.runs, [{ ...RUNS.one1, counts }]);
+      const failure = failureOf(await progressResult(crawlStore, { regionName: 'test-one' }));
+      expect(failure).toStrictEqual({ kind: 'store_unavailable', message: READ_BACK_FAILED_MESSAGE });
+    },
+  );
+
+  it('reading does not rewrite the stored legacy counts', async () => {
+    await insertRows(CRAWL_TABLES.runs, [{ ...RUNS.one1, counts: JSON.stringify(LEGACY_COUNTS) }]);
+    await progress('test-one');
+    await progress('test-one');
+    expect(await storedCounts(RUN_1)).toStrictEqual(LEGACY_COUNTS);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 9. No content (AC-58 read side)
 // ---------------------------------------------------------------------------
 
@@ -853,6 +1272,112 @@ describe('readCrawlProgress carries contract keys only (AC-58)', () => {
       ...Object.keys(TileSizeSchema.shape),
     ]);
     expect(found).toStrictEqual([...contractKeys].sort());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Failure Records and Explicit Retries carry contract keys only (crawl-run1-fixes)
+// ---------------------------------------------------------------------------
+
+/** Only the fields of a started Run needed here (non-strict: U4 adds `placesReleased`). */
+const StartedRunResultSchema = z.object({
+  ok: z.literal(true),
+  value: z.object({ kind: z.literal('started'), runId: z.number().int().positive() }),
+});
+const RecordedResultSchema = z.strictObject({
+  ok: z.literal(true),
+  value: z.strictObject({
+    kind: z.literal('recorded'),
+    parked: z
+      .strictObject({ placeId: z.number().int().positive(), failureKind: z.string() })
+      .optional(),
+  }),
+});
+
+/** Starts a Run of `test-one` through the repository and records one Place and one listing failure. */
+async function seedFailureRecords(): Promise<number> {
+  const repo = openCrawlRepository({ connectionString: requireTestDatabaseUrl() });
+  try {
+    const begun = StartedRunResultSchema.parse(
+      await repo.beginRun({
+        regionName: 'test-one',
+        bbox: SMALL_BBOX,
+        tileSize: { width: 0.005, height: 0.005 },
+        tileCount: 1,
+        relist: false,
+        startedAt: RUN_START,
+        abandonBefore: '2026-10-22T08:00:00Z',
+        counts: ZERO_RUN_COUNTS,
+        retryParked: false,
+      }),
+    );
+    const runId = begun.value.runId;
+    RecordedResultSchema.parse(
+      await repo.recordItemFailure({
+        runId,
+        item: { kind: 'place_details', placeId: 900 },
+        failureKind: 'connection',
+        message: 'Place 900: connection failure: synthetic',
+        failedAt: '2026-10-22T09:00:10Z',
+      }),
+    );
+    RecordedResultSchema.parse(
+      await repo.recordItemFailure({
+        runId,
+        item: { kind: 'listing_page', tileNumber: 1, page: 2 },
+        failureKind: 'wikimapia_error',
+        message: 'Tile 1 page 2: Wikimapia error: synthetic',
+        failedAt: '2026-10-22T09:00:20Z',
+      }),
+    );
+    return runId;
+  } finally {
+    await repo.close();
+  }
+}
+
+describe('readFailureRecords / readExplicitRetries carry contract keys only', () => {
+  it('a Failure Records read returns only `records` and the FailureRecordSchema / FailedItem keys', async () => {
+    const runId = await seedFailureRecords();
+    const value = okValue(await failureRecordsResult(crawlStore, { runId }));
+    expect(Object.keys(value)).toStrictEqual(['records']);
+    expect(value.records).toHaveLength(2);
+    const found = [...collectKeys(JSON.parse(JSON.stringify(value)), new Set<string>())].sort();
+    const contractKeys = new Set<string>([
+      'records',
+      ...Object.keys(FailureRecordSchema.shape),
+      'kind',
+      'placeId',
+      'tileNumber',
+      'page',
+    ]);
+    expect(found).toStrictEqual([...contractKeys].sort());
+    expect(found.some((k) => k.includes('_'))).toBe(false);
+    for (const rec of value.records) {
+      expect(Object.keys(rec).sort()).toStrictEqual(Object.keys(FailureRecordSchema.shape).sort());
+    }
+    const byPlace = okValue(await failureRecordsResult(crawlStore, { placeId: 900 }));
+    expect(Object.keys(byPlace)).toStrictEqual(['records']);
+    expect(byPlace.records).toHaveLength(1);
+    for (const rec of byPlace.records) {
+      expect(Object.keys(rec).sort()).toStrictEqual(Object.keys(FailureRecordSchema.shape).sort());
+      expect(Object.keys(rec.item).sort()).toStrictEqual(['kind', 'placeId']);
+    }
+  });
+
+  it('an Explicit Retries read returns only `retries` and the ExplicitRetrySchema keys', async () => {
+    const runId = await seedFailureRecords();
+    await insertRows(CRAWL_TABLES.explicitRetries, [
+      { run_id: runId, region_name: 'test-one', retried_at: RUN_START, places_released: 2 },
+    ]);
+    const value = okValue(await explicitRetriesResult(crawlStore, { regionName: 'test-one' }));
+    expect(Object.keys(value)).toStrictEqual(['retries']);
+    expect(value.retries).toStrictEqual([
+      { runId, regionName: 'test-one', retriedAt: RUN_START, placesReleased: 2 },
+    ]);
+    const found = [...collectKeys(JSON.parse(JSON.stringify(value)), new Set<string>())].sort();
+    expect(found).toStrictEqual(['retries', ...Object.keys(ExplicitRetrySchema.shape)].sort());
+    expect(found.some((k) => k.includes('_'))).toBe(false);
   });
 });
 

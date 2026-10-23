@@ -17,8 +17,10 @@ import {
 import { buildBoxUrl, buildPlaceDetailsUrl } from '../../src/wikimapia/request';
 import type { ClientResult, ExecuteDeps, Interpretation } from '../../src/wikimapia/types';
 import {
+  ClientFailureSchema,
   DEFAULT_FALLBACK_WAIT_SECONDS,
   DEFAULT_RETRY_LIMIT,
+  KeyQuotaExhaustedFailureSchema,
   ListPlacesResultSchema,
   PlaceDetailsResultSchema,
   type ClientFailure,
@@ -32,12 +34,15 @@ import {
   type WikimapiaTransport,
 } from '../../contracts/wikimapia-client.schema';
 import {
+  KEY_QUOTA_BODY,
   SimulatedClock,
   SimulatedWikimapia,
   TEST_API_KEY,
   answer,
   fixtureAnswer,
   fixtureText,
+  keyQuotaAnswer,
+  keyQuotaVariant,
   rateLimitAnswer,
   rawDetails,
   settle,
@@ -803,5 +808,215 @@ describe('ClientResult is assignable to the contract result types (AL4 1.3)', ()
     expect(ListPlacesResultSchema.safeParse(listing).success).toBe(true);
     expect(toDetails(detailsResult)).toBe(detailsResult);
     expect(toListing(listingResult)).toBe(listingResult);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 21. Key Quota (crawl-run1-fixes AL4 1.4.2; AC-8 .. AC-12, AC-14)
+// ---------------------------------------------------------------------------
+
+const KEY_QUOTA_MESSAGE = 'Key limit has been reached';
+const KEY_QUOTA_PREFIX = 'Wikimapia key quota exhausted (code 1004)';
+
+const KEY_QUOTA_FAILURE: ClientFailure = {
+  kind: 'key_quota_exhausted',
+  message: `${KEY_QUOTA_PREFIX}: ${KEY_QUOTA_MESSAGE}`,
+  wikimapiaMessage: KEY_QUOTA_MESSAGE,
+  code: 1004,
+};
+
+describe('Key Quota on the first attempt (crawl-run1-fixes AL4 1.4.2, AC-8, AC-9)', () => {
+  it('place details: key_quota_exhausted with message and code 1004, 1 request, no sleep', async () => {
+    const { wikimapia, clock, result } = await runDetails([keyQuotaAnswer()], {
+      repeatLast: true,
+    });
+    const failure = expectFailure(result, 'key_quota_exhausted');
+    expect(failure).toStrictEqual(KEY_QUOTA_FAILURE);
+    expect(failure.wikimapiaMessage).toBe(KEY_QUOTA_MESSAGE);
+    expect(failure.code).toBe(1004);
+    expect(wikimapia.requests).toHaveLength(1);
+    expect(clock.sleeps).toStrictEqual([]);
+  });
+
+  it('listing page: key_quota_exhausted with message and code 1004, 1 request, no sleep', async () => {
+    const { wikimapia, clock, result } = await runBox([keyQuotaAnswer()], { repeatLast: true });
+    const failure = expectFailure(result, 'key_quota_exhausted', ListPlacesResultSchema);
+    expect(failure).toStrictEqual(KEY_QUOTA_FAILURE);
+    expect(wikimapia.requests).toHaveLength(1);
+    expect(clock.sleeps).toStrictEqual([]);
+  });
+
+  it('the Key Quota body with code "1004" as text gives the same failure', async () => {
+    const { wikimapia, clock, result } = await runDetails(
+      [answer(KEY_QUOTA_BODY.replace('"code":1004', '"code":"1004"'))],
+      { repeatLast: true },
+    );
+    expect(expectFailure(result, 'key_quota_exhausted')).toStrictEqual(KEY_QUOTA_FAILURE);
+    expect(wikimapia.requests).toHaveLength(1);
+    expect(clock.sleeps).toStrictEqual([]);
+  });
+
+  it('a later data answer is never requested', async () => {
+    const { wikimapia, result } = await runDetails([keyQuotaAnswer(), detailsData()]);
+    expectFailure(result, 'key_quota_exhausted');
+    expect(wikimapia.requests).toHaveLength(1);
+  });
+});
+
+describe('Key Quota during rate-limit retries (crawl-run1-fixes AL4 1.4.2, AC-11)', () => {
+  it('rate limit (7 s) then Key Quota: one 7000 ms sleep, 2 requests, the third answer never requested', async () => {
+    const { wikimapia, clock, result } = await runDetails([
+      rateLimitAnswer(7),
+      keyQuotaAnswer(),
+      detailsData(),
+    ]);
+    expect(expectFailure(result, 'key_quota_exhausted')).toStrictEqual(KEY_QUOTA_FAILURE);
+    expect(clock.sleeps).toStrictEqual([7000]);
+    expect(wikimapia.requests).toHaveLength(2);
+  });
+
+  it('listing page: rate limit (7 s) then Key Quota gives the same', async () => {
+    const { wikimapia, clock, result } = await runBox([
+      rateLimitAnswer(7),
+      keyQuotaAnswer(),
+      boxData(),
+    ]);
+    expect(expectFailure(result, 'key_quota_exhausted', ListPlacesResultSchema)).toStrictEqual(
+      KEY_QUOTA_FAILURE,
+    );
+    expect(clock.sleeps).toStrictEqual([7000]);
+    expect(wikimapia.requests).toHaveLength(2);
+  });
+
+  it('an unreadable wait then Key Quota: one fallback sleep, 2 requests', async () => {
+    const { wikimapia, clock, result } = await runDetails(
+      [rateLimitAnswer('a few'), keyQuotaAnswer(), detailsData()],
+      { fallbackWaitSeconds: 60 },
+    );
+    expect(expectFailure(result, 'key_quota_exhausted')).toStrictEqual(KEY_QUOTA_FAILURE);
+    expect(clock.sleeps).toStrictEqual([60000]);
+    expect(wikimapia.requests).toHaveLength(2);
+  });
+
+  it('Key Quota on the last allowed attempt (retryLimit 2, after 2 rate limits) is still key_quota_exhausted', async () => {
+    const { wikimapia, clock, result } = await runDetails(
+      [rateLimitAnswer(7), rateLimitAnswer(7), keyQuotaAnswer(), detailsData()],
+      { retryLimit: 2 },
+    );
+    expect(expectFailure(result, 'key_quota_exhausted')).toStrictEqual(KEY_QUOTA_FAILURE);
+    expect(clock.sleeps).toStrictEqual([7000, 7000]);
+    expect(wikimapia.requests).toHaveLength(3);
+  });
+});
+
+describe('Key Quota ignores the Retry Limit (crawl-run1-fixes AL4 1.4.2, AC-10)', () => {
+  it.each([[0], [DEFAULT_RETRY_LIMIT], [10], [1000]])(
+    'retryLimit %i: same failure, 1 request, no sleep',
+    async (retryLimit) => {
+      const { wikimapia, clock, result } = await runDetails([keyQuotaAnswer()], {
+        repeatLast: true,
+        retryLimit,
+      });
+      expect(expectFailure(result, 'key_quota_exhausted')).toStrictEqual(KEY_QUOTA_FAILURE);
+      expect(wikimapia.requests).toHaveLength(1);
+      expect(clock.sleeps).toStrictEqual([]);
+    },
+  );
+
+  it('retryLimit 0 gives a result strictly equal to the default retry limit', async () => {
+    const zero = await runDetails([keyQuotaAnswer()], { repeatLast: true, retryLimit: 0 });
+    const defaults = await runDetails([keyQuotaAnswer()], { repeatLast: true });
+    expect(zero.result).toStrictEqual(defaults.result);
+  });
+});
+
+describe('Key Quota failure message (crawl-run1-fixes AL4 1.4.2 keyQuotaMessage)', () => {
+  it('a Wikimapia message gives "<prefix>: <message>"', async () => {
+    const { result } = await runDetails([keyQuotaAnswer()]);
+    expect(expectFailure(result, 'key_quota_exhausted').message).toBe(
+      'Wikimapia key quota exhausted (code 1004): Key limit has been reached',
+    );
+  });
+
+  it.each([
+    ['an empty message', ''],
+    ['a whitespace-only message', '   '],
+    ['tabs and newlines only', '\t\n '],
+  ])('%s gives the bare prefix and keeps wikimapiaMessage as sent', async (_, message) => {
+    const { wikimapia, clock, result } = await runDetails([keyQuotaVariant({ message })], {
+      repeatLast: true,
+    });
+    const failure = expectFailure(result, 'key_quota_exhausted');
+    expect(failure).toStrictEqual({
+      kind: 'key_quota_exhausted',
+      message: KEY_QUOTA_PREFIX,
+      wikimapiaMessage: message,
+      code: 1004,
+    });
+    expect(wikimapia.requests).toHaveLength(1);
+    expect(clock.sleeps).toStrictEqual([]);
+  });
+
+  it('code 1004 with the rate-limit wording is key_quota_exhausted with that message, not waited for (AC-12)', async () => {
+    const wording = 'You have reached the limit for this action. You need to wait for 7 seconds.';
+    const { wikimapia, clock, result } = await runDetails([keyQuotaVariant({ message: wording })], {
+      repeatLast: true,
+    });
+    expect(expectFailure(result, 'key_quota_exhausted')).toStrictEqual({
+      kind: 'key_quota_exhausted',
+      message: `${KEY_QUOTA_PREFIX}: ${wording}`,
+      wikimapiaMessage: wording,
+      code: 1004,
+    });
+    expect(wikimapia.requests).toHaveLength(1);
+    expect(clock.sleeps).toStrictEqual([]);
+  });
+
+  it('the failure passes ClientFailureSchema and KeyQuotaExhaustedFailureSchema', async () => {
+    for (const prepared of [keyQuotaAnswer(), keyQuotaVariant({ message: '' })]) {
+      const { result } = await runDetails([prepared]);
+      const failure = expectFailure(result, 'key_quota_exhausted');
+      expect(ClientFailureSchema.safeParse(failure).success).toBe(true);
+      expect(KeyQuotaExhaustedFailureSchema.safeParse(failure).success).toBe(true);
+    }
+  });
+});
+
+describe('Key Quota without code 1004 is unchanged (crawl-run1-fixes AL4 1.4.2, AC-13)', () => {
+  it.each([
+    ['code 1003', keyQuotaVariant({ code: 1003 })],
+    ['no code', keyQuotaVariant({ code: null })],
+  ])('%s: wikimapia_error with the message, 1 request, no sleep', async (_, prepared) => {
+    const { wikimapia, clock, result } = await runDetails([prepared], { repeatLast: true });
+    const failure = expectFailure(result, 'wikimapia_error');
+    expect(failure.wikimapiaMessage).toBe(KEY_QUOTA_MESSAGE);
+    expect(wikimapia.requests).toHaveLength(1);
+    expect(clock.sleeps).toStrictEqual([]);
+  });
+});
+
+describe('Key Quota failures are redacted (crawl-run1-fixes AL4 1.4.2, AC-14)', () => {
+  it('a message with the API key comes back with the key removed in message and wikimapiaMessage', async () => {
+    const sent = `Key ${TEST_API_KEY} limit has been reached`;
+    const { result } = await runDetails([keyQuotaVariant({ message: sent })]);
+    const failure = expectFailure(result, 'key_quota_exhausted');
+    expect(failure).toStrictEqual({
+      kind: 'key_quota_exhausted',
+      message: `${KEY_QUOTA_PREFIX}: Key [key removed] limit has been reached`,
+      wikimapiaMessage: 'Key [key removed] limit has been reached',
+      code: 1004,
+    });
+  });
+
+  it('a message with a keyed URL comes back with the address removed in message and wikimapiaMessage', async () => {
+    const sent = `Limit reached for https://api.wikimapia.org/?function=box&key=${TEST_API_KEY}`;
+    const { result } = await runBox([keyQuotaVariant({ message: sent })]);
+    const failure = expectFailure(result, 'key_quota_exhausted', ListPlacesResultSchema);
+    expect(failure).toStrictEqual({
+      kind: 'key_quota_exhausted',
+      message: `${KEY_QUOTA_PREFIX}: Limit reached for [request address removed]`,
+      wikimapiaMessage: 'Limit reached for [request address removed]',
+      code: 1004,
+    });
   });
 });

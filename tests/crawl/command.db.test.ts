@@ -9,15 +9,20 @@
  * answers, recorded fixtures through the support helpers). Global `fetch` is a rejecting spy:
  * nothing reaches the network. Every result is parsed with `CrawlCommandResultSchema`; Crawl
  * Progress is read only through the public Crawl Store.
+ *
+ * crawl-run1-fixes (AL4 1.4.10, 1.4.11, U7; AL3 20261022-crawl-run1-fixes-07-command, 2.1 B):
+ * `--retry-parked` Dry Run parked line, Explicit Retry through the command, Quota Run exit 0.
  */
 import { runCrawlCommand } from '../../src/crawl/command';
 import { createCrawlStore } from '../../src/db/crawl-store';
 import { createSchemaSetup } from '../../src/db/schema-setup';
 import {
+  CRAWL_COMMAND_OPTIONS,
   CrawlCommandResultSchema,
   CrawlProgressResultSchema,
   OUTCOME_LABELS,
   SUMMARY_LABELS,
+  ZERO_RUN_COUNTS,
   exitCodeFor,
   type CrawlCommandIO,
   type CrawlCommandResult,
@@ -35,9 +40,12 @@ import {
   TEST_API_KEY,
   at,
   emptyRecordedPage,
+  listingAnswer,
   rateLimitForever,
   scripted,
+  syntheticBoxPlace,
   tileNumberOf,
+  wikimapiaErrorAnswer,
   type Responder,
   type WikimapiaCall,
 } from '../../contracts/hydration.support';
@@ -51,6 +59,7 @@ import {
   UNREACHABLE_PASSWORD,
   requireTestDatabaseUrl,
 } from '../../contracts/storage.support';
+import { keyQuotaAnswer } from '../../contracts/wikimapia-client.support';
 
 // Compile-time check: the entry point has the contract's signature.
 const command: RunCrawlCommandFn = runCrawlCommand;
@@ -289,4 +298,171 @@ describe('runCrawlCommand with the Test Database', () => {
     },
     UNREACHABLE_TIMEOUT_MS,
   );
+});
+
+// ---------------------------------------------------------------------------
+// --retry-parked and the Quota Run (crawl-run1-fixes AL4 1.4.10, 1.4.11, U7;
+// AL3 20261022-crawl-run1-fixes-07-command, section 2.1 B)
+// ---------------------------------------------------------------------------
+
+/** A synthetic Place inside Tile 1 of `belgrade-small`. */
+const PARKED_ID = 7_000_001;
+const PARKED_PLACE = syntheticBoxPlace(PARKED_ID, 20.454, 44.816);
+
+function parkedLine(n: number): string {
+  return `Parked places that ${CRAWL_COMMAND_OPTIONS.retryParked} would release: ${String(n)}`;
+}
+
+/** Tile 1 lists PARKED_PLACE; its Details request gets a Wikimapia Error. */
+function failingScript(): Responder {
+  return scripted({
+    tiles: BELGRADE_SMALL_TILES,
+    listing: {
+      1: [listingAnswer([PARKED_PLACE])],
+      2: [emptyRecordedPage()],
+      3: [emptyRecordedPage()],
+      4: [emptyRecordedPage()],
+    },
+    details: { [PARKED_ID]: wikimapiaErrorAnswer() },
+  });
+}
+
+/** Tile 1 lists PARKED_PLACE; its Details request gets synthetic Place Details. */
+function succeedingScript(): Responder {
+  return scripted({
+    tiles: BELGRADE_SMALL_TILES,
+    listing: {
+      1: [listingAnswer([PARKED_PLACE])],
+      2: [emptyRecordedPage()],
+      3: [emptyRecordedPage()],
+      4: [emptyRecordedPage()],
+    },
+  });
+}
+
+function clockAt(hours: number): SimulatedCrawlClock {
+  return new SimulatedCrawlClock(T0 + hours * HOUR);
+}
+
+/** Three plain Runs, one per hour from hour 0, each failing PARKED_ID: the Place is Parked. */
+async function parkOnePlaceThroughTheCommand(): Promise<void> {
+  for (const hours of [0, 1, 2]) {
+    const { result, wikimapia } = await runCommand(
+      [CRAWL_COMMAND_OPTIONS.region, 'belgrade-small'],
+      failingScript(),
+      { clock: clockAt(hours) },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(wikimapia.detailsIds).toStrictEqual([PARKED_ID]);
+  }
+}
+
+function dryRetryArgv(): string[] {
+  return [
+    CRAWL_COMMAND_OPTIONS.region,
+    'belgrade-small',
+    CRAWL_COMMAND_OPTIONS.dryRun,
+    CRAWL_COMMAND_OPTIONS.retryParked,
+  ];
+}
+
+function expectDryRetryOutput(result: CrawlCommandResult, output: readonly string[], n: number) {
+  const lines = result.report.summaryText.split('\n');
+  expect(output).toHaveLength(1 + BELGRADE_SMALL_TILES.length + 1 + lines.length);
+  expect(output[0]).toBe('Region belgrade-small: 4 tiles');
+  output.slice(1, 5).forEach((line, i) => {
+    expect(line).toMatch(new RegExp(`^Tile ${String(i + 1)}: west `));
+  });
+  expect(output[5]).toBe(parkedLine(n));
+  expect(output.slice(6)).toStrictEqual(lines);
+  expect(output.filter((line) => line.startsWith('Parked places that'))).toStrictEqual([
+    parkedLine(n),
+  ]);
+  expect(result.report.summaryText).not.toContain('Parked places that');
+}
+
+describe('runCrawlCommand --retry-parked with the Test Database', () => {
+  it('Dry Run: the plan, one parked line, then the summary; nothing changes', async () => {
+    await parkOnePlaceThroughTheCommand();
+    const runsBefore = (await progress('belgrade-small')).runs;
+
+    const { result, output, wikimapia } = await runCommand(dryRetryArgv(), succeedingScript(), {
+      clock: clockAt(3),
+    });
+    expect(result.report.outcome).toBe('planned');
+    expect(result.exitCode).toBe(0);
+    expect(result.report.parkedPlacesInRegion).toBe(1);
+    expect(result.report.summary.counts).toStrictEqual(ZERO_RUN_COUNTS);
+    expect(wikimapia.calls).toHaveLength(0);
+    expectDryRetryOutput(result, output, 1);
+    expect((await progress('belgrade-small')).runs).toStrictEqual(runsBefore);
+
+    // The Place is still Parked: a plain Run does not request it.
+    const plain = await runCommand(
+      [CRAWL_COMMAND_OPTIONS.region, 'belgrade-small'],
+      succeedingScript(),
+      { clock: clockAt(4) },
+    );
+    expect(plain.result.exitCode).toBe(0);
+    expect(plain.wikimapia.detailsIds).not.toContain(PARKED_ID);
+  });
+
+  it('Dry Run with nothing Parked prints "would release: 0" and exits 0', async () => {
+    const { result, output, wikimapia } = await runCommand(dryRetryArgv(), emptyScript());
+    expect(result.report.outcome).toBe('planned');
+    expect(result.exitCode).toBe(0);
+    expect(result.report.parkedPlacesInRegion).toBe(0);
+    expect(result.report.summary.counts).toStrictEqual(ZERO_RUN_COUNTS);
+    expect(wikimapia.calls).toHaveLength(0);
+    expectDryRetryOutput(result, output, 0);
+  });
+
+  it('--retry-parked --budget 10 releases and requests the Place; the retry line precedes the summary', async () => {
+    await parkOnePlaceThroughTheCommand();
+
+    const { result, output, wikimapia } = await runCommand(
+      [
+        CRAWL_COMMAND_OPTIONS.region,
+        'belgrade-small',
+        CRAWL_COMMAND_OPTIONS.retryParked,
+        CRAWL_COMMAND_OPTIONS.budget,
+        '10',
+      ],
+      succeedingScript(),
+      { clock: clockAt(3) },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(wikimapia.detailsIds).toStrictEqual([PARKED_ID]);
+    expect(result.report.summary.counts.placesReleased).toBe(1);
+    expect('parkedPlacesInRegion' in result.report).toBe(false);
+
+    const retryLine = 'Explicit retry: released 1 parked places of region belgrade-small';
+    const retryIndex = output.indexOf(retryLine);
+    expect(retryIndex).toBeGreaterThanOrEqual(0);
+    const lines = result.report.summaryText.split('\n');
+    expect(output.slice(output.length - lines.length)).toStrictEqual(lines);
+    expect(retryIndex).toBeLessThan(output.length - lines.length);
+    expect(output.some((line) => line.startsWith('Parked places that'))).toBe(false);
+  });
+});
+
+describe('runCrawlCommand: Quota Run with the Test Database (crawl-run1-fixes U7)', () => {
+  it('the first request answered with the Key Quota: exit 0, Quota Exhausted, the Wikimapia line, no secrets', async () => {
+    const { result, output, wikimapia } = await runCommand(
+      [CRAWL_COMMAND_OPTIONS.region, 'belgrade-small'],
+      () => keyQuotaAnswer(),
+    );
+    expect(result.report.outcome).toBe('quota_exhausted');
+    expect(result.exitCode).toBe(0);
+    expect(wikimapia.calls).toHaveLength(1);
+    expect(outcomeLine(result)).toBe(
+      `${SUMMARY_LABELS.outcome}: ${OUTCOME_LABELS.quota_exhausted}`,
+    );
+    expect(output).toContain(outcomeLine(result));
+    expect(output.some((line) => line.startsWith(`${SUMMARY_LABELS.wikimapiaMessage}: `))).toBe(
+      true,
+    );
+    expectNoSecrets(output.join('\n'));
+    expectNoSecrets(JSON.stringify(result));
+  });
 });

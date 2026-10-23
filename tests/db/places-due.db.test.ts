@@ -338,3 +338,125 @@ describe('selectPlacesDue / countPlacesDue inside a transaction', () => {
     expect(places).toStrictEqual([{ placeId: 300 }]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 8. excludePlaceIds (AL4 crawl-run1-fixes 1.4.7; AL3 routing
+//    20261022-crawl-run1-fixes-04-parking, section 2.1 C)
+// ---------------------------------------------------------------------------
+
+/** `selectPlacesDue` with an exclusion list, gated with the contract value schema. */
+async function selectExcluding(
+  excludePlaceIds: readonly number[],
+  dueBefore: string = CUTOFF,
+  limit?: number,
+): Promise<DuePlace[]> {
+  const places = await selectPlacesDue(db, {
+    bbox: SMALL_BBOX,
+    dueBefore,
+    excludePlaceIds,
+    ...(limit === undefined ? {} : { limit }),
+  });
+  return PlacesDueValueSchema.parse({ places }).places;
+}
+
+describe('selectPlacesDue / countPlacesDue: excludePlaceIds', () => {
+  it('an empty list gives exactly the results without the option', async () => {
+    await seedR1();
+    expect(await selectExcluding([])).toStrictEqual(R1_EXPECTED);
+    expect(await selectExcluding([], CUTOFF, 2)).toStrictEqual(R1_EXPECTED.slice(0, 2));
+    expect(
+      await countPlacesDue(db, { bbox: SMALL_BBOX, dueBefore: CUTOFF, excludePlaceIds: [] }),
+    ).toBe(R1_EXPECTED.length);
+  });
+
+  it('excluding ids removes exactly those Places; the rest keep Details Order', async () => {
+    await seedR1();
+    const places = await selectExcluding([900, 1381893]);
+    expect(places).toStrictEqual(
+      R1_EXPECTED.filter((p) => p.placeId !== 900 && p.placeId !== 1381893),
+    );
+    expect(isInDetailsOrder(places)).toBe(true);
+  });
+
+  it('excluding every due Place gives []', async () => {
+    await seedR1();
+    expect(await selectExcluding(ids(R1_EXPECTED))).toStrictEqual([]);
+    expect(
+      await countPlacesDue(db, {
+        bbox: SMALL_BBOX,
+        dueBefore: CUTOFF,
+        excludePlaceIds: ids(R1_EXPECTED),
+      }),
+    ).toBe(0);
+  });
+
+  it('limit applies after the exclusion: excluding the first due Place with limit 1 gives the second', async () => {
+    await seedR1();
+    expect(await selectExcluding([300], CUTOFF, 1)).toStrictEqual([{ placeId: 900 }]);
+    expect(await selectExcluding([300, 900], CUTOFF, 2)).toStrictEqual(R1_EXPECTED.slice(2, 4));
+  });
+
+  it('ids that are not due, not in the bbox or not stored change nothing', async () => {
+    await seedR1();
+    // 800 is not due at the cutoff, 950 is outside the bbox, 123456 is not stored.
+    expect(await selectExcluding([800, 950, 123456])).toStrictEqual(R1_EXPECTED);
+    expect(
+      await countPlacesDue(db, {
+        bbox: SMALL_BBOX,
+        dueBefore: CUTOFF,
+        excludePlaceIds: [800, 950, 123456],
+      }),
+    ).toBe(R1_EXPECTED.length);
+  });
+
+  it('a duplicated id in the list is excluded once, like any other', async () => {
+    await seedR1();
+    expect(await selectExcluding([700, 700])).toStrictEqual(
+      R1_EXPECTED.filter((p) => p.placeId !== 700),
+    );
+  });
+
+  it.each([
+    [[] as number[]],
+    [[300]],
+    [[900, 62587]],
+    [[300, 900, 700, 1381893, 62587]],
+  ])('countPlacesDue excluding %j equals the unlimited list length and ignores limit', async (excluded) => {
+    await seedR1();
+    const list = await selectExcluding(excluded, CUTOFF_PLUS_ONE);
+    const count = await countPlacesDue(db, {
+      bbox: SMALL_BBOX,
+      dueBefore: CUTOFF_PLUS_ONE,
+      excludePlaceIds: excluded,
+    });
+    expect(count).toBe(list.length);
+    expect(count).toBe(R1_EXPECTED.length + 1 - excluded.length);
+    expect(
+      await countPlacesDue(db, {
+        bbox: SMALL_BBOX,
+        dueBefore: CUTOFF_PLUS_ONE,
+        excludePlaceIds: excluded,
+        limit: 1,
+      }),
+    ).toBe(count);
+  });
+
+  it('works inside a transaction', async () => {
+    await seedR1();
+    const [places, count] = await db.transaction(async (trx) => {
+      const listed = await selectPlacesDue(trx, {
+        bbox: SMALL_BBOX,
+        dueBefore: CUTOFF,
+        excludePlaceIds: [300],
+      });
+      const counted = await countPlacesDue(trx, {
+        bbox: SMALL_BBOX,
+        dueBefore: CUTOFF,
+        excludePlaceIds: [300],
+      });
+      return [listed, counted] as const;
+    });
+    expect(places).toStrictEqual(R1_EXPECTED.slice(1));
+    expect(count).toBe(R1_EXPECTED.length - 1);
+  });
+});
