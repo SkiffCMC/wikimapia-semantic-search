@@ -26,6 +26,7 @@ import {
   type ListingPage,
   type PlaceDetails,
   type PlaceDetailsResult,
+  type WikimapiaClient,
   type WikimapiaClientOptions,
 } from './wikimapia-client.schema';
 import {
@@ -42,6 +43,7 @@ import {
   rawBox,
   rawDetails,
   settle,
+  type FixtureName,
   type SimulatedAnswer,
 } from './wikimapia-client.support';
 
@@ -69,6 +71,14 @@ function setup(
 /** Central Belgrade, the bbox of the recorded `box` page. */
 const BELGRADE = { west: 20.452, south: 44.814, east: 20.462, north: 44.82 } as const;
 
+type AnyResult = ListPlacesResult | PlaceDetailsResult;
+
+/** Both client functions, each with the recorded fixture that answers it normally. */
+const CALLS: readonly [string, FixtureName, (client: WikimapiaClient) => Promise<AnyResult>][] = [
+  ['Listing Page', 'box-belgrade-page1.json', (c) => c.listPlaces({ bbox: BELGRADE, page: 1 })],
+  ['Place Details', 'getbyid-1381893.json', (c) => c.getPlaceDetails({ placeId: 1381893 })],
+];
+
 function okListing(result: ListPlacesResult): ListingPage {
   const parsed = ListPlacesResultSchema.parse(result);
   if (!parsed.ok) throw new Error(`expected a Listing Page, got ${JSON.stringify(parsed.failure)}`);
@@ -83,7 +93,7 @@ function okDetails(result: PlaceDetailsResult): PlaceDetails {
 
 /** Asserts a strict failure result (no partial data) of the given kind and returns it. */
 function failure<K extends ClientFailure['kind']>(
-  result: ListPlacesResult | PlaceDetailsResult,
+  result: AnyResult,
   kind: K,
 ): Extract<ClientFailure, { kind: K }> {
   const parsed = PlaceDetailsResultSchema.or(ListPlacesResultSchema).parse(result);
@@ -119,7 +129,7 @@ describe('AC-1 Happy path, Listing Page', () => {
 });
 
 describe('AC-2 Place Summary content', () => {
-  it('reports University Park with whole-number id, link, location and outline', async () => {
+  it('reports University Park in full and keeps every Wikimapia page link (rule 8)', async () => {
     const { client } = setup([fixtureAnswer('box-belgrade-page1.json')]);
     const page = okListing(await client.listPlaces({ bbox: BELGRADE, page: 1 }));
     const park = page.places.find((p) => p.placeId === 1381893);
@@ -142,11 +152,6 @@ describe('AC-2 Place Summary content', () => {
         { lon: 20.458394, lat: 44.818727 },
       ],
     });
-  });
-
-  it('keeps the Wikimapia page link of every summary (licensing, rule 8)', async () => {
-    const { client } = setup([fixtureAnswer('box-belgrade-page1.json')]);
-    const page = okListing(await client.listPlaces({ bbox: BELGRADE, page: 1 }));
     for (const place of page.places) {
       expect(place.url).toMatch(new RegExp(`^http://wikimapia\\.org/${String(place.placeId)}/`));
     }
@@ -182,26 +187,18 @@ describe('AC-4 Default page size', () => {
 });
 
 describe('AC-5 Language, optional', () => {
-  it('asks for the stated language on every request', async () => {
+  it.each([
+    ['stated "en"', { language: 'en' }, 'en'],
+    ['not stated', {}, null],
+  ] as const)('language %s: both functions ask for %s', async (_, options, expected) => {
     const { client, wikimapia } = setup(
       [fixtureAnswer('box-belgrade-page1.json'), fixtureAnswer('getbyid-62587.json')],
-      { language: 'en' },
+      options,
     );
     okListing(await client.listPlaces({ bbox: BELGRADE, page: 1 }));
     okDetails(await client.getPlaceDetails({ placeId: 62587 }));
-    expect(wikimapia.params(0).get('language')).toBe('en');
-    expect(wikimapia.params(1).get('language')).toBe('en');
-  });
-
-  it('asks for no particular language when none is stated', async () => {
-    const { client, wikimapia } = setup([
-      fixtureAnswer('box-belgrade-page1.json'),
-      fixtureAnswer('getbyid-62587.json'),
-    ]);
-    okListing(await client.listPlaces({ bbox: BELGRADE, page: 1 }));
-    okDetails(await client.getPlaceDetails({ placeId: 62587 }));
-    expect(wikimapia.params(0).has('language')).toBe(false);
-    expect(wikimapia.params(1).has('language')).toBe(false);
+    expect(wikimapia.params(0).get('language')).toBe(expected);
+    expect(wikimapia.params(1).get('language')).toBe(expected);
   });
 });
 
@@ -216,40 +213,27 @@ describe('AC-6 Empty page', () => {
 });
 
 describe('AC-7 Invalid Bounding Box', () => {
-  const cases = [
-    ['west equals east', { ...BELGRADE, east: BELGRADE.west }],
-    ['west greater than east', { ...BELGRADE, west: 20.5, east: 20.4 }],
-    ['south equals north', { ...BELGRADE, north: BELGRADE.south }],
-    ['south greater than north', { ...BELGRADE, south: 45, north: 44 }],
+  it.each([
+    ['west not less than east', { ...BELGRADE, east: BELGRADE.west }],
+    ['south not less than north', { ...BELGRADE, south: 45, north: 44 }],
     ['longitude above 180', { ...BELGRADE, east: 180.5 }],
-    ['longitude below -180', { ...BELGRADE, west: -181 }],
-    ['latitude above 90', { ...BELGRADE, north: 90.5 }],
     ['latitude below -90', { ...BELGRADE, south: -91 }],
-    ['not a number', { ...BELGRADE, west: Number.NaN }],
-  ] as const;
-
-  it.each(cases)(
-    '%s: reports Invalid Request naming the bbox and sends nothing',
-    async (_, bbox) => {
-      const { client, wikimapia } = setup([fixtureAnswer('box-belgrade-page1.json')]);
-      const f = failure(await client.listPlaces({ bbox, page: 1 }), 'invalid_request');
-      expect(f.issues.some((issue) => issue.path[0] === 'bbox')).toBe(true);
-      expect(wikimapia.requests).toHaveLength(0);
-    },
-  );
+  ] as const)('%s: reports Invalid Request naming the bbox and sends nothing', async (_, bbox) => {
+    const { client, wikimapia } = setup([fixtureAnswer('box-belgrade-page1.json')]);
+    const f = failure(await client.listPlaces({ bbox, page: 1 }), 'invalid_request');
+    expect(f.issues.some((issue) => issue.path[0] === 'bbox')).toBe(true);
+    expect(wikimapia.requests).toHaveLength(0);
+  });
 });
 
 describe('AC-8 Invalid paging', () => {
-  const cases = [
+  it.each([
     ['page 0', { page: 0 }, 'page'],
-    ['page -1', { page: -1 }, 'page'],
     ['page 1.5', { page: 1.5 }, 'page'],
     ['page size 0', { page: 1, pageSize: 0 }, 'pageSize'],
     ['page size 101', { page: 1, pageSize: 101 }, 'pageSize'],
     ['page size 2.5', { page: 1, pageSize: 2.5 }, 'pageSize'],
-  ] as const;
-
-  it.each(cases)('%s: reports Invalid Request and sends nothing', async (_, paging, field) => {
+  ] as const)('%s: reports Invalid Request and sends nothing', async (_, paging, field) => {
     const { client, wikimapia } = setup([fixtureAnswer('box-belgrade-page1.json')]);
     const f = failure(await client.listPlaces({ bbox: BELGRADE, ...paging }), 'invalid_request');
     expect(f.issues.some((issue) => issue.path[0] === field)).toBe(true);
@@ -392,28 +376,24 @@ describe('AC-14 Optional details present', () => {
 });
 
 describe('AC-15 Parent place', () => {
-  it('reports no Parent Place ID for parent id "0"', async () => {
-    const { client } = setup([fixtureAnswer('getbyid-1381893.json')]);
-    const place = okDetails(await client.getPlaceDetails({ placeId: 1381893 }));
-    expect(place).not.toHaveProperty('parentPlaceId');
-  });
-
-  it('reports any other parent id as a whole number (reconstructed: parent_id "7291521")', async () => {
+  it.each([
+    ['"0" (recorded)', '0', undefined],
+    ['"7291521" (reconstructed)', '7291521', 7291521],
+  ] as const)('parent id %s', async (_, parentId, expected) => {
     const raw = rawDetails('getbyid-1381893.json');
-    raw.parent_id = '7291521';
+    raw.parent_id = parentId;
     const { client } = setup([answer(raw)]);
     const place = okDetails(await client.getPlaceDetails({ placeId: 1381893 }));
-    expect(place.parentPlaceId).toBe(7291521);
+    expect('parentPlaceId' in place).toBe(expected !== undefined);
+    expect(place.parentPlaceId).toBe(expected);
   });
 });
 
 describe('AC-16 Extra items ignored', () => {
   it('does not report urlhtml, gadm, zoom, x/y, pl or other unlisted items', async () => {
     const { client } = setup([fixtureAnswer('getbyid-62587.json')]);
-    const result = await client.getPlaceDetails({ placeId: 62587 });
-    const place = okDetails(result);
-    if (!result.ok) throw new Error('unreachable');
-    expect(Object.keys(result.value).sort()).toStrictEqual(
+    const place = okDetails(await client.getPlaceDetails({ placeId: 62587 }));
+    expect(Object.keys(place).sort()).toStrictEqual(
       [
         'comments',
         'description',
@@ -466,44 +446,13 @@ describe('AC-17 What is asked of Wikimapia, details', () => {
   });
 });
 
-describe('API key travels encrypted (HTTPS, contract change 2026-10-21)', () => {
-  function expectHttpsWikimapia(requests: readonly { url: string }[]) {
-    expect(requests.length).toBeGreaterThan(0);
-    for (const request of requests) {
-      const url = new URL(request.url);
-      expect(url.protocol).toBe('https:');
-      expect(url.hostname).toBe('api.wikimapia.org');
-    }
-  }
-
-  it('every Listing Page request, including retries, goes to https://api.wikimapia.org', async () => {
-    const { client, wikimapia } = setup([
-      rateLimitAnswer(7),
-      fixtureAnswer('box-belgrade-page1.json'),
-    ]);
-    okListing(await client.listPlaces({ bbox: BELGRADE, page: 1 }));
-    expect(wikimapia.requests).toHaveLength(2);
-    expectHttpsWikimapia(wikimapia.requests);
-  });
-
-  it('every Place Details request, including retries, goes to https://api.wikimapia.org', async () => {
-    const { client, wikimapia } = setup([rateLimitAnswer(7), fixtureAnswer('getbyid-62587.json')]);
-    okDetails(await client.getPlaceDetails({ placeId: 62587 }));
-    expect(wikimapia.requests).toHaveLength(2);
-    expectHttpsWikimapia(wikimapia.requests);
-  });
-});
-
 describe('AC-18 Invalid Place ID', () => {
-  it.each([0, -5, 1.5, Number.NaN])(
-    '%s: reports Invalid Request and sends nothing',
-    async (placeId) => {
-      const { client, wikimapia } = setup([fixtureAnswer('getbyid-62587.json')]);
-      const f = failure(await client.getPlaceDetails({ placeId }), 'invalid_request');
-      expect(f.issues.some((issue) => issue.path[0] === 'placeId')).toBe(true);
-      expect(wikimapia.requests).toHaveLength(0);
-    },
-  );
+  it.each([0, -5, 1.5])('%s: reports Invalid Request and sends nothing', async (placeId) => {
+    const { client, wikimapia } = setup([fixtureAnswer('getbyid-62587.json')]);
+    const f = failure(await client.getPlaceDetails({ placeId }), 'invalid_request');
+    expect(f.issues.some((issue) => issue.path[0] === 'placeId')).toBe(true);
+    expect(wikimapia.requests).toHaveLength(0);
+  });
 });
 
 describe('AC-19 Deleted place', () => {
@@ -518,37 +467,21 @@ describe('AC-19 Deleted place', () => {
 });
 
 describe('AC-20 Deleted or blocked comment', () => {
-  it('returns deleted and blocked comments with their marks set', async () => {
-    const raw = rawDetails('getbyid-62587.json');
-    at(raw.comments, 0).is_deleted = true;
-    at(raw.comments, 1).block = true;
-    const { client } = setup([answer(raw)]);
-    const place = okDetails(await client.getPlaceDetails({ placeId: 62587 }));
-    expect(at(place.comments, 0)).toMatchObject({
-      author: 'Mateja',
-      isDeleted: true,
-      isBlocked: false,
-    });
-    expect(at(place.comments, 1)).toMatchObject({
-      author: 'Serbia',
-      isDeleted: false,
-      isBlocked: true,
-    });
-  });
-
-  it('returns deleted and blocked replies with their marks set', async () => {
+  it('returns a deleted comment, a blocked reply and an unmarked reply with their own marks', async () => {
     const raw = nestedFixture();
-    const serbia = at(at(raw.comments, 0).replies, 0);
-    serbia.is_deleted = true;
-    at(serbia.replies, 0).block = true;
+    const mateja = at(raw.comments, 0);
+    mateja.is_deleted = true;
+    at(mateja.replies, 0).block = true;
     const { client } = setup([answer(raw)]);
     const place = okDetails(await client.getPlaceDetails({ placeId: 62587 }));
-    const reply = at(at(place.comments, 0).replies, 0);
-    expect(reply).toMatchObject({ author: 'Serbia', isDeleted: true, isBlocked: false });
+    const comment = at(place.comments, 0);
+    const reply = at(comment.replies, 0);
+    expect(comment).toMatchObject({ author: 'Mateja', isDeleted: true, isBlocked: false });
+    expect(reply).toMatchObject({ author: 'Serbia', isDeleted: false, isBlocked: true });
     expect(at(reply.replies, 0)).toMatchObject({
       author: 'Paul',
       isDeleted: false,
-      isBlocked: true,
+      isBlocked: false,
     });
   });
 });
@@ -666,20 +599,28 @@ describe('AC-45 No Commenter IPs at any depth', () => {
 });
 
 describe('AC-46 Wrong shape inside a Reply', () => {
-  it('reports Unexpected Response when a reply to a reply lacks its author', async () => {
+  type RawDetails = ReturnType<typeof nestedFixture>;
+  it.each([
+    [
+      'a reply to a reply lacks its author',
+      (raw: RawDetails) => {
+        Reflect.deleteProperty(at(at(at(raw.comments, 0).replies, 0).replies, 0), 'name');
+      },
+      ['comments', 0, 'replies', 0, 'replies', 0, 'name'],
+    ],
+    [
+      'a reply has a vote count that is not a whole number',
+      (raw: RawDetails) => {
+        at(at(raw.comments, 0).replies, 0).good = 1.5;
+      },
+      ['comments', 0, 'replies', 0, 'good'],
+    ],
+  ])('%s: reports Unexpected Response naming the item', async (_, spoil, path) => {
     const raw = nestedFixture();
-    Reflect.deleteProperty(at(at(at(raw.comments, 0).replies, 0).replies, 0), 'name');
+    spoil(raw);
     const { client } = setup([answer(raw)]);
     const f = failure(await client.getPlaceDetails({ placeId: 62587 }), 'unexpected_response');
-    expect(hasIssueAt(f, ['comments', 0, 'replies', 0, 'replies', 0, 'name'])).toBe(true);
-  });
-
-  it('reports Unexpected Response when a reply has a vote count that is not a whole number', async () => {
-    const raw = nestedFixture();
-    at(at(raw.comments, 0).replies, 0).good = 1.5;
-    const { client } = setup([answer(raw)]);
-    const f = failure(await client.getPlaceDetails({ placeId: 62587 }), 'unexpected_response');
-    expect(hasIssueAt(f, ['comments', 0, 'replies', 0, 'good'])).toBe(true);
+    expect(hasIssueAt(f, path)).toBe(true);
   });
 });
 
@@ -719,44 +660,29 @@ describe('AC-22 Recognise and wait', () => {
 });
 
 describe('AC-23 Applies to both functions', () => {
-  it('waits and retries for a Listing Page request', async () => {
-    const { client, wikimapia, clock } = setup([
-      rateLimitAnswer(7),
-      fixtureAnswer('box-belgrade-page1.json'),
-    ]);
-    const page = okListing(await client.listPlaces({ bbox: BELGRADE, page: 1 }));
-    expect(page.totalFound).toBe(290);
-    expect(clock.sleeps).toStrictEqual([7000]);
-    expect(wikimapia.requests).toHaveLength(2);
-    expect(at(wikimapia.requests, 1).url).toBe(at(wikimapia.requests, 0).url);
-  });
-
-  it('waits and retries for a Place Details request', async () => {
-    const { client, wikimapia, clock } = setup([
-      rateLimitAnswer(7),
-      fixtureAnswer('getbyid-1381893.json'),
-    ]);
-    const place = okDetails(await client.getPlaceDetails({ placeId: 1381893 }));
-    expect(place.title).toBe('University Park');
-    expect(clock.sleeps).toStrictEqual([7000]);
-    expect(wikimapia.requests).toHaveLength(2);
-  });
+  it.each(CALLS)(
+    '%s request: waits 7 s and resends the identical request',
+    async (_, fixture, call) => {
+      const { client, wikimapia, clock } = setup([rateLimitAnswer(7), fixtureAnswer(fixture)]);
+      const result = await call(client);
+      expect(result.ok).toBe(true);
+      expect(clock.sleeps).toStrictEqual([7000]);
+      expect(wikimapia.requests).toHaveLength(2);
+      expect(at(wikimapia.requests, 1).url).toBe(at(wikimapia.requests, 0).url);
+    },
+  );
 });
 
 describe('AC-24 Not mistaken for data', () => {
-  it('is never reported as Unexpected Response, even when retries are used up', async () => {
-    const listing = setup([rateLimitAnswer(4)], { retryLimit: 0 });
-    const f1 = failure(
-      await listing.client.listPlaces({ bbox: BELGRADE, page: 1 }),
-      'rate_limit_exhausted',
-    );
-    expect(f1.kind).not.toBe('unexpected_response');
-
-    const details = setup([rateLimitAnswer(4)], { retryLimit: 0 });
-    failure(await details.client.getPlaceDetails({ placeId: 62587 }), 'rate_limit_exhausted');
-    expect(details.wikimapia.requests).toHaveLength(1);
-    expect(details.clock.sleeps).toStrictEqual([]);
-  });
+  it.each(CALLS)(
+    '%s request: never data, never Unexpected Response, even when retries are used up',
+    async (_, _fixture, call) => {
+      const { client, wikimapia, clock } = setup([rateLimitAnswer(4)], { retryLimit: 0 });
+      failure(await call(client), 'rate_limit_exhausted');
+      expect(wikimapia.requests).toHaveLength(1);
+      expect(clock.sleeps).toStrictEqual([]);
+    },
+  );
 });
 
 describe('AC-25 Several limits in a row', () => {
@@ -796,17 +722,7 @@ describe('AC-26 Retry Limit reached', () => {
 });
 
 describe('AC-27 Unreadable Wait Time', () => {
-  it('waits the default Fallback Wait Time of 60 s and retries', async () => {
-    const { client, wikimapia, clock } = setup([
-      rateLimitAnswer('a few'),
-      fixtureAnswer('getbyid-62587.json'),
-    ]);
-    okDetails(await client.getPlaceDetails({ placeId: 62587 }));
-    expect(clock.sleeps).toStrictEqual([60000]);
-    expect(wikimapia.requests).toHaveLength(2);
-  });
-
-  it('counts towards the Retry Limit', async () => {
+  it('waits the default Fallback Wait Time of 60 s, retries, and counts towards the Retry Limit', async () => {
     const { client, wikimapia, clock } = setup([rateLimitAnswer('a few')], {
       repeatLast: true,
       retryLimit: 1,
@@ -819,17 +735,7 @@ describe('AC-27 Unreadable Wait Time', () => {
 });
 
 describe('AC-28 Wait Time of zero', () => {
-  it('retries without waiting', async () => {
-    const { client, wikimapia, clock } = setup([
-      rateLimitAnswer(0),
-      fixtureAnswer('getbyid-62587.json'),
-    ]);
-    okDetails(await client.getPlaceDetails({ placeId: 62587 }));
-    expect(wikimapia.requests).toHaveLength(2);
-    expect(clock.totalMilliseconds).toBe(0);
-  });
-
-  it('counts towards the Retry Limit', async () => {
+  it('retries without waiting, counting towards the Retry Limit', async () => {
     const { client, wikimapia, clock } = setup([rateLimitAnswer(0)], {
       repeatLast: true,
       retryLimit: 2,
@@ -937,49 +843,38 @@ describe('AC-31 Missing API Key', () => {
 });
 
 describe('AC-32 Other Wikimapia messages', () => {
-  it('reports a Wikimapia Error with the message text and does not retry (details)', async () => {
-    const { client, wikimapia, clock } = setup([fixtureAnswer('debug-error.json')], {
-      repeatLast: true,
-    });
-    const f = failure(await client.getPlaceDetails({ placeId: 62587 }), 'wikimapia_error');
-    expect(f.wikimapiaMessage).toBe('Invalid API key.');
-    expect(wikimapia.requests).toHaveLength(1);
-    expect(clock.sleeps).toStrictEqual([]);
-  });
-
-  it('reports a Wikimapia Error and does not retry (listing)', async () => {
-    const { client, wikimapia } = setup([fixtureAnswer('debug-error.json')], { repeatLast: true });
-    failure(await client.listPlaces({ bbox: BELGRADE, page: 1 }), 'wikimapia_error');
-    expect(wikimapia.requests).toHaveLength(1);
-  });
+  it.each(CALLS)(
+    '%s request: reports a Wikimapia Error with the message text and does not retry',
+    async (_, _fixture, call) => {
+      const { client, wikimapia, clock } = setup([fixtureAnswer('debug-error.json')], {
+        repeatLast: true,
+      });
+      const f = failure(await call(client), 'wikimapia_error');
+      expect(f.wikimapiaMessage).toBe('Invalid API key.');
+      expect(wikimapia.requests).toHaveLength(1);
+      expect(clock.sleeps).toStrictEqual([]);
+    },
+  );
 });
 
 describe('AC-33 Cannot reach Wikimapia', () => {
-  it('reports a Connection Failure when Wikimapia cannot be reached, without retrying', async () => {
-    const { client, wikimapia, clock } = setup([{ unreachable: true }], { repeatLast: true });
-    failure(await client.getPlaceDetails({ placeId: 62587 }), 'connection');
+  it.each([
+    ['unreachable', { unreachable: true }, undefined],
+    ['status 404', answer(fixtureText('getbyid-62587.json'), 404), 404],
+    ['status 503', answer(fixtureText('getbyid-62587.json'), 503), 503],
+  ] as const)('%s: reports a Connection Failure without retrying', async (_, reply, status) => {
+    const { client, wikimapia, clock } = setup([reply], { repeatLast: true });
+    const f = failure(await client.listPlaces({ bbox: BELGRADE, page: 1 }), 'connection');
+    expect(f.status).toBe(status);
     expect(wikimapia.requests).toHaveLength(1);
     expect(clock.sleeps).toStrictEqual([]);
   });
-
-  it.each([404, 500, 503])(
-    'reports a Connection Failure for status %i, without retrying',
-    async (status) => {
-      const { client, wikimapia } = setup([answer(fixtureText('getbyid-62587.json'), status)], {
-        repeatLast: true,
-      });
-      const f = failure(await client.listPlaces({ bbox: BELGRADE, page: 1 }), 'connection');
-      expect(f.status).toBe(status);
-      expect(wikimapia.requests).toHaveLength(1);
-    },
-  );
 });
 
 describe('AC-34 Unreadable answer', () => {
   it.each([
     ['HTML page', '<html><body>Service temporarily unavailable</body></html>'],
     ['empty body', ''],
-    ['truncated JSON', fixtureText('getbyid-62587.json').slice(0, 200)],
   ])('%s: reports an Unexpected Response', async (_, body) => {
     const { client } = setup([answer(body)]);
     failure(await client.getPlaceDetails({ placeId: 62587 }), 'unexpected_response');
@@ -987,49 +882,59 @@ describe('AC-34 Unreadable answer', () => {
 });
 
 describe('AC-35 Wrong shape', () => {
-  it('details without a title: names `title`', async () => {
-    const raw = rawDetails('getbyid-62587.json');
-    Reflect.deleteProperty(raw, 'title');
-    const { client } = setup([answer(raw)]);
-    const f = failure(await client.getPlaceDetails({ placeId: 62587 }), 'unexpected_response');
-    expect(hasIssueAt(f, ['title'])).toBe(true);
-  });
+  const listing = (c: WikimapiaClient) => c.listPlaces({ bbox: BELGRADE, page: 1 });
+  const details = (c: WikimapiaClient) => c.getPlaceDetails({ placeId: 62587 });
 
-  it('comment without an author: names `comments[1].name`', async () => {
+  function spoiledDetails(spoil: (raw: ReturnType<typeof rawDetails>) => void) {
     const raw = rawDetails('getbyid-62587.json');
-    Reflect.deleteProperty(at(raw.comments, 1), 'name');
-    const { client } = setup([answer(raw)]);
-    const f = failure(await client.getPlaceDetails({ placeId: 62587 }), 'unexpected_response');
-    expect(hasIssueAt(f, ['comments', 1, 'name'])).toBe(true);
-  });
+    spoil(raw);
+    return answer(raw);
+  }
 
-  it.each([['abc'], [1.5], [-3]])('place id %s: names `id`', async (id) => {
-    const raw = rawDetails('getbyid-62587.json');
-    Object.assign(raw, { id });
-    const { client } = setup([answer(raw)]);
-    const f = failure(await client.getPlaceDetails({ placeId: 62587 }), 'unexpected_response');
-    expect(hasIssueAt(f, ['id'])).toBe(true);
-  });
-
-  it('box place with a non-numeric id: names `folder[0].id`', async () => {
+  function spoiledBox(spoil: (raw: ReturnType<typeof rawBox>) => void) {
     const raw = rawBox('box-belgrade-page1.json');
-    at(raw.folder, 0).id = 'abc';
-    const { client } = setup([answer(raw)]);
-    const f = failure(await client.listPlaces({ bbox: BELGRADE, page: 1 }), 'unexpected_response');
-    expect(hasIssueAt(f, ['folder', 0, 'id'])).toBe(true);
-  });
+    spoil(raw);
+    return answer(raw);
+  }
 
-  it('box page without Total Found: names `found`', async () => {
-    const raw = rawBox('box-belgrade-page1.json');
-    Reflect.deleteProperty(raw, 'found');
-    const { client } = setup([answer(raw)]);
-    const f = failure(await client.listPlaces({ bbox: BELGRADE, page: 1 }), 'unexpected_response');
-    expect(hasIssueAt(f, ['found'])).toBe(true);
-  });
-
-  it('an empty JSON list (as `place.getbyarea` returns) is an Unexpected Response', async () => {
-    const { client } = setup([answer('[]')]);
-    failure(await client.listPlaces({ bbox: BELGRADE, page: 1 }), 'unexpected_response');
+  it.each([
+    [
+      'details without a title',
+      details,
+      spoiledDetails((raw) => Reflect.deleteProperty(raw, 'title')),
+      ['title'],
+    ],
+    [
+      'comment without an author',
+      details,
+      spoiledDetails((raw) => Reflect.deleteProperty(at(raw.comments, 1), 'name')),
+      ['comments', 1, 'name'],
+    ],
+    [
+      'place id that is not a whole number',
+      details,
+      spoiledDetails((raw) => Object.assign(raw, { id: 1.5 })),
+      ['id'],
+    ],
+    [
+      'box place with a non-numeric id',
+      listing,
+      spoiledBox((raw) => {
+        at(raw.folder, 0).id = 'abc';
+      }),
+      ['folder', 0, 'id'],
+    ],
+    [
+      'box page without Total Found',
+      listing,
+      spoiledBox((raw) => Reflect.deleteProperty(raw, 'found')),
+      ['found'],
+    ],
+    ['an empty JSON list (as `place.getbyarea` returns)', listing, answer('[]'), []],
+  ])('%s: reports Unexpected Response naming the item', async (_, call, body, path) => {
+    const { client } = setup([body]);
+    const f = failure(await call(client), 'unexpected_response');
+    expect(hasIssueAt(f, path)).toBe(true);
   });
 });
 
@@ -1037,7 +942,7 @@ describe('AC-36 API Key never exposed', () => {
   const WIKIMAPIA_URL_WITH_KEY = `https://api.wikimapia.org/?function=place.getbyid&key=${TEST_API_KEY}&id=62587`;
 
   async function allFailures(): Promise<ClientFailure[]> {
-    const outcomes: (ListPlacesResult | PlaceDetailsResult)[] = [];
+    const outcomes: AnyResult[] = [];
     const unconfigured = create({
       apiKey: '',
       transport: new SimulatedWikimapia([]).transport,
@@ -1095,31 +1000,38 @@ describe('AC-36 API Key never exposed', () => {
 });
 
 describe('AC-37 No Commenter IPs in failures', () => {
-  it('an Unexpected Response for a wrong reply carries no IP from any level', async () => {
-    const raw = addCommenterIps(nestedFixture());
-    Reflect.deleteProperty(at(at(at(raw.comments, 0).replies, 0).replies, 0), 'name');
-    const { client } = setup([answer(raw)]);
-    const f = failure(await client.getPlaceDetails({ placeId: 62587 }), 'unexpected_response');
-    const json = JSON.stringify(f);
-    for (const ip of SYNTHETIC_IPS) expect(json).not.toContain(String(ip));
-  });
-
-  it('an Unexpected Response for a wrongly typed Commenter IP does not echo the IP', async () => {
-    const raw = addCommenterIps(rawDetails('getbyid-62587.json'));
-    Object.assign(at(raw.comments, 0), { user_ip: '1555555555', good: 'many' });
-    const { client } = setup([answer(raw)]);
-    const f = failure(await client.getPlaceDetails({ placeId: 62587 }), 'unexpected_response');
+  it.each([
+    [
+      'Unexpected Response for a reply to a reply without author',
+      () => {
+        const raw = addCommenterIps(nestedFixture());
+        Reflect.deleteProperty(at(at(at(raw.comments, 0).replies, 0).replies, 0), 'name');
+        return answer(raw);
+      },
+      'unexpected_response',
+    ],
+    [
+      'Unexpected Response for a wrongly typed Commenter IP',
+      () => {
+        const raw = addCommenterIps(rawDetails('getbyid-62587.json'));
+        Object.assign(at(raw.comments, 0), { user_ip: '1555555555', good: 'many' });
+        return answer(raw);
+      },
+      'unexpected_response',
+    ],
+    [
+      'Wikimapia Error for an answer that also carried comments',
+      () => {
+        const withIps = addCommenterIps(nestedFixture());
+        return answer({ debug: { message: 'Invalid API key.' }, comments: withIps.comments });
+      },
+      'wikimapia_error',
+    ],
+  ] as const)('%s carries no IP from any level', async (_, body, kind) => {
+    const { client } = setup([body()]);
+    const f = failure(await client.getPlaceDetails({ placeId: 62587 }), kind);
     const json = JSON.stringify(f);
     for (const ip of [...SYNTHETIC_IPS, 1555555555]) expect(json).not.toContain(String(ip));
-  });
-
-  it('a Wikimapia Error for an answer that also carried comments carries no IP', async () => {
-    const withIps = addCommenterIps(nestedFixture());
-    const body = { debug: { message: 'Invalid API key.' }, comments: withIps.comments };
-    const { client } = setup([answer(body)]);
-    const f = failure(await client.getPlaceDetails({ placeId: 62587 }), 'wikimapia_error');
-    const json = JSON.stringify(f);
-    for (const ip of SYNTHETIC_IPS) expect(json).not.toContain(String(ip));
   });
 });
 

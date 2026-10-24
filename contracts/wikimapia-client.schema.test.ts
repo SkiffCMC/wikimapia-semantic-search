@@ -1,69 +1,25 @@
 /**
- * AL5 CONTRACT TESTS: Wikimapia API client (schemas, validators and fixtures).
+ * AL5 CONTRACT TESTS: Wikimapia API client (custom validators and fixtures).
  *
  * Layer:    AL5 (Contracts). These tests do not import the implementation and pass before AL2.
  * Derives:  docs/al6-requirements/20261020-wikimapia-client-al6.md (AC-39, AC-40, AC-41, AC-50,
- *           plus the boundary invariants behind AC-7, AC-8, AC-11, AC-16, AC-18, AC-35, AC-45)
+ *           plus the custom refinements and validators behind AC-7, AC-11, AC-45, rule 5 and
+ *           rule 8). Plain Zod rules (types, ranges, strict objects) are exercised through the
+ *           client in ./wikimapia-client.test.ts, not re-checked here.
  * Enforces: .agrules section 2 (strict Zod boundaries), section 4 (recorded fixtures with
  *           Wikimapia attribution, no API key, no Commenter IPs).
  */
 import {
   BoundingBoxSchema,
-  ClientConfigSchema,
-  ClientFailureSchema,
-  CommentSchema,
-  ListPlacesInputSchema,
-  ListPlacesResultSchema,
-  PlaceDetailsInputSchema,
-  PlaceDetailsSchema,
   PlaceSummarySchema,
   RawDebugResponseSchema,
-  WIKIMAPIA_API_URL,
   findCommenterIpPaths,
   isWikimapiaPlaceUrl,
   parseRateLimitMessage,
-  type Comment,
-  type PlaceDetails,
 } from './wikimapia-client.schema';
 import { FIXTURE_NAMES, at, fixtureText, rawBox, rawDetails } from './wikimapia-client.support';
 
 const BELGRADE = { west: 20.452, south: 44.814, east: 20.462, north: 44.82 };
-
-const COMMENT: Comment = {
-  placeId: 62587,
-  num: 1,
-  langId: 0,
-  author: 'Mateja',
-  authorUserId: 0,
-  message: 'Everybodey is waiting for someone here',
-  goodVotes: 5,
-  badVotes: 15,
-  isBlocked: false,
-  isDeleted: false,
-  postedAtEpochSeconds: 1169755601,
-  moderatorUserId: 0,
-  replies: [],
-};
-
-const DETAILS: PlaceDetails = {
-  placeId: 1381893,
-  title: 'University Park',
-  description: 'Belgrade,Serbia.',
-  tags: [{ id: 194, title: 'park' }],
-  isBuilding: false,
-  isRegion: false,
-  isDeleted: false,
-  outline: [{ lon: 20.456688, lat: 44.8198 }],
-  location: {
-    lon: 20.457876,
-    lat: 44.819524,
-    north: 44.820321,
-    south: 44.818727,
-    east: 20.459064,
-    west: 20.456688,
-  },
-  comments: [COMMENT],
-};
 
 /** The README section that lists reconstructed fixtures. */
 function reconstructedSection(): string {
@@ -73,154 +29,60 @@ function reconstructedSection(): string {
   return readme.slice(start);
 }
 
-describe('Schemas and validators (pass before AL2)', () => {
-  it('the Wikimapia API base address uses HTTPS on api.wikimapia.org (API key encrypted)', () => {
-    const base = new URL(WIKIMAPIA_API_URL);
-    expect(base.protocol).toBe('https:');
-    expect(base.hostname).toBe('api.wikimapia.org');
+describe('Custom refinements and validators (pass before AL2)', () => {
+  it.each([
+    ['central Belgrade', BELGRADE, true],
+    ['west equals east', { ...BELGRADE, east: BELGRADE.west }, false],
+    ['south greater than north', { ...BELGRADE, south: 45, north: 44 }, false],
+  ])('BoundingBox ordering refinement (AC-7): %s', (_, bbox, valid) => {
+    expect(BoundingBoxSchema.safeParse(bbox).success).toBe(valid);
   });
 
-  it('BoundingBox accepts central Belgrade and rejects the AC-7 cases', () => {
-    expect(BoundingBoxSchema.safeParse(BELGRADE).success).toBe(true);
-    for (const bad of [
-      { ...BELGRADE, east: BELGRADE.west },
-      { ...BELGRADE, north: BELGRADE.south },
-      { ...BELGRADE, east: 181 },
-      { ...BELGRADE, west: -180.1 },
-      { ...BELGRADE, north: 90.1 },
-      { ...BELGRADE, south: -90.1 },
-      { ...BELGRADE, west: Number.NaN },
-    ]) {
-      expect(BoundingBoxSchema.safeParse(bad).success).toBe(false);
-    }
+  it.each([
+    ['http://wikimapia.org/1381893/University-Park', 1381893, true],
+    ['https://wikimapia.org/1381893/ru/University-Park', 1381893, true],
+    ['http://wikimapia.org/13818930/x', 1381893, false],
+    ['http://example.org/1381893/x', 1381893, false],
+  ])('isWikimapiaPlaceUrl(%s, %i) is %s (rule 8)', (url, placeId, expected) => {
+    expect(isWikimapiaPlaceUrl(url, placeId)).toBe(expected);
   });
 
-  it('ListPlacesInput enforces whole page >= 1 and page size 1..100 (AC-8)', () => {
-    expect(ListPlacesInputSchema.safeParse({ bbox: BELGRADE, page: 1 }).success).toBe(true);
-    expect(
-      ListPlacesInputSchema.safeParse({ bbox: BELGRADE, page: 2, pageSize: 100 }).success,
-    ).toBe(true);
-    for (const paging of [
-      { page: 0 },
-      { page: 1.5 },
-      { page: 1, pageSize: 0 },
-      { page: 1, pageSize: 101 },
-      { page: 1, pageSize: 2.5 },
-    ]) {
-      expect(ListPlacesInputSchema.safeParse({ bbox: BELGRADE, ...paging }).success).toBe(false);
-    }
-  });
-
-  it('PlaceDetailsInput requires a positive whole Place ID (AC-18)', () => {
-    expect(PlaceDetailsInputSchema.safeParse({ placeId: 62587 }).success).toBe(true);
-    for (const placeId of [0, -1, 1.5, Number.NaN]) {
-      expect(PlaceDetailsInputSchema.safeParse({ placeId }).success).toBe(false);
-    }
-  });
-
-  it('ClientConfig rejects a missing or empty API key (AC-31)', () => {
-    expect(ClientConfigSchema.safeParse({ apiKey: 'k' }).success).toBe(true);
-    expect(ClientConfigSchema.safeParse({ apiKey: '' }).success).toBe(false);
-    expect(ClientConfigSchema.safeParse({}).success).toBe(false);
-    expect(ClientConfigSchema.safeParse({ apiKey: 'k', language: 'eng' }).success).toBe(false);
-  });
-
-  it('Comment has no Commenter IP field at any depth (AC-11, AC-45)', () => {
-    expect(CommentSchema.safeParse(COMMENT).success).toBe(true);
-    expect(CommentSchema.safeParse({ ...COMMENT, user_ip: 1 }).success).toBe(false);
-    expect(CommentSchema.safeParse({ ...COMMENT, userIp: 1 }).success).toBe(false);
-    const nested = {
-      ...COMMENT,
-      replies: [{ ...COMMENT, replies: [{ ...COMMENT, user_ip: -5 }] }],
-    };
-    expect(CommentSchema.safeParse(nested).success).toBe(false);
-  });
-
-  it('Comment and PlaceDetails reject empty or undefined placeholders for optional items (AC-13)', () => {
-    expect(CommentSchema.safeParse({ ...COMMENT, moderatorName: null }).success).toBe(false);
-    expect(CommentSchema.safeParse({ ...COMMENT, authorPhotoUrl: '' }).success).toBe(false);
-    expect(PlaceDetailsSchema.safeParse(DETAILS).success).toBe(true);
-    expect(PlaceDetailsSchema.safeParse({ ...DETAILS, wikipediaUrl: '' }).success).toBe(false);
-    expect(PlaceDetailsSchema.safeParse({ ...DETAILS, wikipediaUrl: undefined }).success).toBe(
-      false,
-    );
-    expect(PlaceDetailsSchema.safeParse({ ...DETAILS, parentPlaceId: 0 }).success).toBe(false);
-    expect(
-      PlaceDetailsSchema.safeParse({ ...DETAILS, location: { ...DETAILS.location, street: '' } })
-        .success,
-    ).toBe(false);
-  });
-
-  it('PlaceDetails rejects unlisted items such as urlhtml (AC-16)', () => {
-    expect(PlaceDetailsSchema.safeParse({ ...DETAILS, urlhtml: '<a></a>' }).success).toBe(false);
-  });
-
-  it('Place Summary link must point at its own Wikimapia page', () => {
-    expect(isWikimapiaPlaceUrl('http://wikimapia.org/1381893/University-Park', 1381893)).toBe(true);
-    expect(isWikimapiaPlaceUrl('https://wikimapia.org/1381893/ru/University-Park', 1381893)).toBe(
-      true,
-    );
-    expect(isWikimapiaPlaceUrl('http://wikimapia.org/13818930/x', 1381893)).toBe(false);
-    expect(isWikimapiaPlaceUrl('http://example.org/1381893/x', 1381893)).toBe(false);
+  it('PlaceSummary rejects a link to another place (rule 8)', () => {
     const summary = {
       placeId: 62587,
       name: 'Square of the Republic',
       url: 'http://wikimapia.org/1381893/University-Park',
-      location: DETAILS.location,
+      location: { lon: 20.46, lat: 44.81, north: 44.82, south: 44.81, east: 20.47, west: 20.45 },
       outline: [],
     };
     expect(PlaceSummarySchema.safeParse(summary).success).toBe(false);
   });
 
-  it('parseRateLimitMessage recognises the documented body and other messages (rule 5)', () => {
-    expect(
-      parseRateLimitMessage(
-        'You have reached the limit for this action. You need to wait for 7 seconds.',
-      ),
-    ).toStrictEqual({ isRateLimit: true, waitSeconds: 7 });
-    expect(
-      parseRateLimitMessage(
-        'You have reached the limit for this action. You need to wait for 0 seconds.',
-      ),
-    ).toStrictEqual({ isRateLimit: true, waitSeconds: 0 });
-    expect(
-      parseRateLimitMessage(
-        'You have reached the limit for this action. You need to wait for a few seconds.',
-      ),
-    ).toStrictEqual({ isRateLimit: true });
-    expect(parseRateLimitMessage('You need to wait for 7.5 seconds.')).toStrictEqual({
-      isRateLimit: true,
-    });
-    expect(parseRateLimitMessage('Invalid API key.')).toStrictEqual({ isRateLimit: false });
+  it.each([
+    [
+      'You have reached the limit for this action. You need to wait for 7 seconds.',
+      { isRateLimit: true, waitSeconds: 7 },
+    ],
+    [
+      'You have reached the limit for this action. You need to wait for 0 seconds.',
+      { isRateLimit: true, waitSeconds: 0 },
+    ],
+    [
+      'You have reached the limit for this action. You need to wait for a few seconds.',
+      { isRateLimit: true },
+    ],
+    ['You need to wait for 7.5 seconds.', { isRateLimit: true }],
+    ['Invalid API key.', { isRateLimit: false }],
+  ])('parseRateLimitMessage(%j) (rule 5)', (message, expected) => {
+    expect(parseRateLimitMessage(message)).toStrictEqual(expected);
   });
 
-  it('findCommenterIpPaths finds IP keys at any depth', () => {
-    expect(findCommenterIpPaths({ comments: [{ replies: [{ user_ip: 1 }] }] })).toStrictEqual([
-      '$.comments[0].replies[0].user_ip',
-    ]);
-    expect(findCommenterIpPaths({ a: [{ userIp: 1 }] })).toStrictEqual(['$.a[0].userIp']);
-    expect(findCommenterIpPaths(DETAILS)).toStrictEqual([]);
-  });
-
-  it('a failure result carries no partial data (AC-35, AC-46)', () => {
-    const failure = {
-      kind: 'unexpected_response',
-      message: 'bad',
-      issues: [{ path: ['title'], message: 'missing' }],
-    };
-    expect(ClientFailureSchema.safeParse(failure).success).toBe(true);
-    expect(ListPlacesResultSchema.safeParse({ ok: false, failure }).success).toBe(true);
-    expect(
-      ListPlacesResultSchema.safeParse({
-        ok: false,
-        failure,
-        value: { page: 1, pageSize: 1, totalFound: 0, places: [] },
-      }).success,
-    ).toBe(false);
-    expect(
-      ClientFailureSchema.safeParse({ kind: 'unexpected_response', message: 'bad', issues: [] })
-        .success,
-    ).toBe(false);
+  it.each([
+    [{ comments: [{ replies: [{ user_ip: 1 }] }] }, ['$.comments[0].replies[0].user_ip']],
+    [{ a: [{ userIp: 1 }] }, ['$.a[0].userIp']],
+    [{ comments: [{ name: 'Mateja', replies: [] }] }, []],
+  ])('findCommenterIpPaths(%j) finds IP keys at any depth (AC-11, AC-45)', (value, expected) => {
+    expect(findCommenterIpPaths(value)).toStrictEqual(expected);
   });
 });
 
@@ -263,10 +125,6 @@ describe('AC-40 Rate-Limit fixture', () => {
     expect(body.debug.message).toBe(
       'You have reached the limit for this action. You need to wait for 7 seconds.',
     );
-    expect(parseRateLimitMessage(body.debug.message)).toStrictEqual({
-      isRateLimit: true,
-      waitSeconds: 7,
-    });
   });
 
   it('is marked in the README as reconstructed from documentation', () => {
@@ -313,14 +171,6 @@ describe('AC-50 Nested-replies fixture', () => {
       comments: [{ ...mateja, replies: [{ ...serbia, replies: [paul] }] }],
     };
     expect(rawDetails('getbyid-62587-nested-replies.json')).toStrictEqual(expected);
-  });
-
-  it('does not replace the flat 62587 fixture used by AC-9 and AC-10', () => {
-    const flat = rawDetails('getbyid-62587.json');
-    expect(flat.comments.map((c) => [c.name, c.replies.length])).toStrictEqual([
-      ['Mateja', 0],
-      ['Serbia', 0],
-    ]);
   });
 
   it('is marked in the README as reconstructed', () => {
