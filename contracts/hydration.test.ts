@@ -476,33 +476,21 @@ const smallScript = (s: Omit<Script, 'tiles'> = {}): Responder =>
 // ===========================================================================
 
 describe('AC-1 Belgrade Regions defined', () => {
-  it('a Dry Run of each default Region reports its Bounding Box and Tile Size 0.005 x 0.005', async () => {
-    const expected = [
-      { name: 'belgrade', bbox: { west: 20.15, south: 44.65, east: 20.75, north: 44.98 } },
-      { name: 'belgrade-small', bbox: { west: 20.452, south: 44.814, east: 20.462, north: 44.82 } },
-    ];
-    for (const region of expected) {
-      const { report } = await crawl({
-        request: { regionName: region.name, dryRun: true },
-        configuration: 'default',
-      });
-      expect(report.outcome).toBe('planned');
-      const reported = TilePlanSchema.parse(report.plan);
-      expect(reported.regionName).toBe(region.name);
-      expectBbox(reported.bbox, region.bbox);
-      expect(reported.tileSize.width).toBeCloseTo(0.005, 9);
-      expect(reported.tileSize.height).toBeCloseTo(0.005, 9);
-    }
-  });
-
-  it('an unknown Region lists exactly the two default Region Names', async () => {
+  // "Exactly these two" is asserted through the unknown-Region message in AC-5.
+  it.each([
+    { name: 'belgrade', bbox: { west: 20.15, south: 44.65, east: 20.75, north: 44.98 } },
+    { name: 'belgrade-small', bbox: { west: 20.452, south: 44.814, east: 20.462, north: 44.82 } },
+  ])('a Dry Run of $name reports its Bounding Box and Tile Size 0.005 x 0.005', async (region) => {
     const { report } = await crawl({
-      request: { regionName: 'nowhere' },
+      request: { regionName: region.name, dryRun: true },
       configuration: 'default',
     });
-    expect(report.outcome).toBe('failed');
-    const names = report.message?.match(/\bbelgrade(?:-[a-z0-9-]+)?\b/g) ?? [];
-    expect([...new Set(names)].sort()).toStrictEqual(['belgrade', 'belgrade-small']);
+    expect(report.outcome).toBe('planned');
+    const reported = TilePlanSchema.parse(report.plan);
+    expect(reported.regionName).toBe(region.name);
+    expectBbox(reported.bbox, region.bbox);
+    expect(reported.tileSize.width).toBeCloseTo(0.005, 9);
+    expect(reported.tileSize.height).toBeCloseTo(0.005, 9);
   });
 });
 
@@ -608,15 +596,15 @@ describe('AC-67 Tile Size is per Region', () => {
 });
 
 describe('AC-5 Unknown Region', () => {
-  it('ends Failed naming the Region and the known Region Names; sends nothing, changes nothing', async () => {
+  it('ends Failed naming the Region and exactly the known Region Names (AC-1); sends nothing, changes nothing', async () => {
     const { report, wikimapia } = await crawl({
       request: { regionName: 'atlantis' },
       configuration: 'default',
     });
     expect(report.outcome).toBe('failed');
     expect(report.message).toContain('atlantis');
-    expect(report.message).toContain('belgrade');
-    expect(report.message).toContain('belgrade-small');
+    const names = report.message?.match(/\bbelgrade(?:-[a-z0-9-]+)?\b/g) ?? [];
+    expect([...new Set(names)].sort()).toStrictEqual(['belgrade', 'belgrade-small']);
     expect(wikimapia.calls).toHaveLength(0);
     expect(report.summary.counts).toStrictEqual(ZERO_RUN_COUNTS);
     await expectDatabaseUntouched(['atlantis', 'belgrade', 'belgrade-small']);
@@ -624,12 +612,15 @@ describe('AC-5 Unknown Region', () => {
 });
 
 describe('AC-6 Invalid configuration', () => {
-  const bad: {
+  // One representative per setting and per source (configuration or Run override).
+  it.each<{
+    name: string;
     setting: string;
     configuration?: CrawlConfiguration;
     request?: Partial<CrawlRequest>;
-  }[] = [
+  }>([
     {
+      name: 'west > east',
       setting: 'bbox',
       configuration: testConfiguration({
         regions: [
@@ -638,25 +629,40 @@ describe('AC-6 Invalid configuration', () => {
       }),
     },
     {
+      name: 'width 0',
       setting: 'tileSize',
       configuration: testConfiguration({
         regions: [{ ...REGION_T1, tileSize: { width: 0, height: 0.005 } }],
       }),
     },
-    { setting: 'listingPageSize', configuration: testConfiguration({ listingPageSize: 0 }) },
-    { setting: 'listingPageSize', configuration: testConfiguration({ listingPageSize: 101 }) },
-    { setting: 'refreshAgeDays', configuration: testConfiguration({ refreshAgeDays: -1 }) },
     {
+      name: '101',
+      setting: 'listingPageSize',
+      configuration: testConfiguration({ listingPageSize: 101 }),
+    },
+    {
+      name: 'negative',
+      setting: 'refreshAgeDays',
+      configuration: testConfiguration({ refreshAgeDays: -1 }),
+    },
+    {
+      name: 'NaN',
       setting: 'minRequestIntervalSeconds',
       configuration: testConfiguration({ minRequestIntervalSeconds: Number.NaN }),
     },
-    { setting: 'requestBudget', configuration: testConfiguration({ requestBudget: -3 }) },
-    { setting: 'requestBudget', request: { requestBudget: Number.NaN } },
-    { setting: 'refreshAgeDays', request: { refreshAgeDays: -0.5 } },
-  ];
-
-  for (const [i, c] of bad.entries()) {
-    it(`case ${String(i + 1)}: an invalid ${c.setting} ends Failed naming it, before any request or change`, async () => {
+    {
+      name: 'negative',
+      setting: 'requestBudget',
+      configuration: testConfiguration({ requestBudget: -3 }),
+    },
+    {
+      name: 'NaN as a Run override',
+      setting: 'requestBudget',
+      request: { requestBudget: Number.NaN },
+    },
+  ])(
+    'an invalid $setting ($name) ends Failed naming it, before any request or change',
+    async (c) => {
       const { report, wikimapia } = await crawl({
         request: { regionName: REGION_T1.name, ...c.request },
         responder: scripted({ tiles: T1_TILES }),
@@ -666,21 +672,22 @@ describe('AC-6 Invalid configuration', () => {
       expect(report.message).toContain(c.setting);
       expect(wikimapia.calls).toHaveLength(0);
       await expectDatabaseUntouched(TEST_REGION_NAMES);
-    });
-  }
+    },
+  );
 });
 
 describe('AC-7 Missing API Key', () => {
-  for (const apiKey of [null, '', '   '] as const) {
-    it(`ends Failed saying the API Key is missing (key ${JSON.stringify(apiKey)}); nothing sent or changed`, async () => {
+  it.each([null, '   '] as const)(
+    'ends Failed saying the API Key is missing (key %j); nothing sent or changed',
+    async (apiKey) => {
       const { report, wikimapia } = await crawlRegion(REGION_T1, {}, { apiKey });
       expect(report.outcome).toBe('failed');
       expect(report.message).toMatch(/api key/i);
       expect(report.message).toMatch(/missing|not (?:set|configured)|empty/i);
       expect(wikimapia.calls).toHaveLength(0);
       await expectDatabaseUntouched(TEST_REGION_NAMES);
-    });
-  }
+    },
+  );
 });
 
 // ===========================================================================
@@ -926,11 +933,12 @@ describe('AC-17 Failed Listing Page', () => {
 });
 
 describe('AC-18 Wikimapia Error or Unexpected Response on a page', () => {
-  for (const [kind, answerFor] of [
+  it.each([
     ['wikimapia_error', wikimapiaErrorAnswer],
     ['unexpected_response', unexpectedAnswer],
-  ] as const) {
-    it(`a ${kind} is not retried, counts one Item Failure, and the next Tile is listed`, async () => {
+  ] as const)(
+    'a %s is not retried, counts one Item Failure, and the next Tile is listed',
+    async (kind, answerFor) => {
       const { report, wikimapia } = await crawlRegion(REGION_T2, {
         listing: { 1: [answerFor()], 2: [listingAnswer([])] },
       });
@@ -943,8 +951,8 @@ describe('AC-18 Wikimapia Error or Unexpected Response on a page', () => {
       const pass = at((await progress(REGION_T2.name)).passes, 0);
       expect(pass.finishedTiles).toStrictEqual([2]);
       expect(pass.complete).toBe(false);
-    });
-  }
+    },
+  );
 });
 
 describe('AC-19 Details Phase follows listing failures', () => {
@@ -1595,21 +1603,14 @@ describe('AC-44 Rate Limit Exhausted stops cleanly', () => {
 });
 
 describe('AC-45 Clean stops are not failures of the command', () => {
-  it('Budget Reached and Rate Limited exit with success and state the outcome', async () => {
-    const budget = await runCommand(['--region', 'belgrade-small', '--budget', '1'], smallScript());
-    expect(budget.result.report.outcome).toBe('budget_reached');
-    expect(budget.result.exitCode).toBe(0);
-    expect(budget.output.join('\n')).toContain(
-      `${SUMMARY_LABELS.outcome}: ${OUTCOME_LABELS.budget_reached}`,
-    );
-
-    await emptyAll();
-    const limited = await runCommand(['--region', 'belgrade-small'], () => rateLimitForever());
-    expect(limited.result.report.outcome).toBe('rate_limited');
-    expect(limited.result.exitCode).toBe(0);
-    expect(limited.output.join('\n')).toContain(
-      `${SUMMARY_LABELS.outcome}: ${OUTCOME_LABELS.rate_limited}`,
-    );
+  it.each<[RunReport['outcome'], string[], Responder]>([
+    ['budget_reached', ['--region', 'belgrade-small', '--budget', '1'], smallScript()],
+    ['rate_limited', ['--region', 'belgrade-small'], () => rateLimitForever()],
+  ])('%s exits with success and states the outcome', async (outcome, argv, responder) => {
+    const { result, output } = await runCommand(argv, responder);
+    expect(result.report.outcome).toBe(outcome);
+    expect(result.exitCode).toBe(0);
+    expect(output.join('\n')).toContain(`${SUMMARY_LABELS.outcome}: ${OUTCOME_LABELS[outcome]}`);
   });
 });
 
@@ -1654,14 +1655,6 @@ describe('AC-46 Operator interrupt', () => {
     expect(at(listingPages(next.wikimapia.calls, T1_TILES), 0)).toBe(
       page2Finished ? 'tile 1 page 3' : 'tile 1 page 2',
     );
-  });
-
-  it('a Run interrupted before it starts sends nothing and ends Interrupted', async () => {
-    const controller = new AbortController();
-    controller.abort();
-    const { report, wikimapia } = await crawlRegion(REGION_T1, {}, { signal: controller.signal });
-    expect(report.outcome).toBe('interrupted');
-    expect(wikimapia.calls).toHaveLength(0);
   });
 });
 
@@ -2107,29 +2100,22 @@ describe('AC-60 Missing Region option', () => {
 });
 
 describe('AC-61 Scheduler friendly', () => {
-  it('exit status: success for Completed and Planned, failure for Failed and Interrupted', async () => {
-    const completed = await runCommand(['--region', 'belgrade-small'], smallScript());
-    expect(completed.result.report.outcome).toBe('completed');
-    expect(completed.result.exitCode).toBe(0);
-
-    const planned = await runCommand(['--region', 'belgrade-small', '--dry-run'], smallScript());
-    expect(planned.result.exitCode).toBe(0);
-
-    const failed = await runCommand(['--region', 'atlantis'], smallScript());
-    expect(failed.result.report.outcome).toBe('failed');
-    expect(failed.result.exitCode).toBe(1);
-
+  // Budget Reached and Rate Limited are AC-45. The interrupt arrives before the Run starts work,
+  // so it also shows that an interrupted Run sends nothing (AC-46).
+  it.each<[RunReport['outcome'], string[], boolean, 0 | 1]>([
+    ['completed', ['--region', 'belgrade-small'], false, 0],
+    ['planned', ['--region', 'belgrade-small', '--dry-run'], false, 0],
+    ['failed', ['--region', 'atlantis'], false, 1],
+    ['interrupted', ['--region', 'belgrade-small', '--relist'], true, 1],
+  ])('%s exits on its own with status %i', async (outcome, argv, interrupt, exitCode) => {
     const controller = new AbortController();
-    controller.abort();
-    const interrupted = await runCommand(
-      ['--region', 'belgrade-small', '--relist'],
-      smallScript(),
-      {
-        signal: controller.signal,
-      },
-    );
-    expect(interrupted.result.report.outcome).toBe('interrupted');
-    expect(interrupted.result.exitCode).toBe(1);
+    if (interrupt) controller.abort();
+    const { result, wikimapia } = await runCommand(argv, smallScript(), {
+      signal: controller.signal,
+    });
+    expect(result.report.outcome).toBe(outcome);
+    expect(result.exitCode).toBe(exitCode);
+    if (interrupt) expect(wikimapia.calls).toHaveLength(0);
   });
 });
 

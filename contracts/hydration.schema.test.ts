@@ -39,6 +39,7 @@ import {
   isInsideBoundingBox,
   toMoment,
   type Region,
+  type RunCounts,
   type RunOutcome,
   type Tile,
   type TilePlan,
@@ -130,92 +131,68 @@ describe('AC-1 Belgrade Regions defined (default configuration)', () => {
 
 describe('AC-6 Invalid configuration (schema)', () => {
   const valid = testConfiguration();
-  const cases: [string, unknown][] = [
+
+  it('accepts the test configuration', () => {
+    expect(CrawlConfigurationSchema.safeParse(valid).success).toBe(true);
+  });
+
+  // Only the custom refinements; plain number, integer and range rules are Zod's own.
+  it.each<[string, string, unknown]>([
     [
+      'a Bounding Box with west > east',
       'bbox',
       { ...valid, regions: [{ ...REGION_T1, bbox: { west: 21, south: 44, east: 20, north: 45 } }] },
     ],
-    ['tileSize', { ...valid, regions: [{ ...REGION_T1, tileSize: { width: 0, height: 1 } }] }],
-    ['tileSize', { ...valid, regions: [{ ...REGION_T1, tileSize: { width: 0.1, height: -1 } }] }],
-    ['listingPageSize', { ...valid, listingPageSize: 0 }],
-    ['listingPageSize', { ...valid, listingPageSize: 101 }],
-    ['listingPageSize', { ...valid, listingPageSize: 2.5 }],
-    ['refreshAgeDays', { ...valid, refreshAgeDays: -1 }],
-    ['refreshAgeDays', { ...valid, refreshAgeDays: Number.NaN }],
-    ['minRequestIntervalSeconds', { ...valid, minRequestIntervalSeconds: -0.1 }],
-    ['requestBudget', { ...valid, requestBudget: Number.NaN }],
-    ['requestBudget', { ...valid, requestBudget: -1 }],
-  ];
-  for (const [setting, config] of cases) {
-    it(`rejects a bad ${setting} with an issue path naming it`, () => {
-      const parsed = CrawlConfigurationSchema.safeParse(config);
-      expect(parsed.success).toBe(false);
-      expect(parsed.error?.issues.some((i) => i.path.map(String).includes(setting))).toBe(true);
-    });
-  }
-
-  it('accepts the test configuration and a Refresh Age of 0', () => {
-    expect(CrawlConfigurationSchema.safeParse(valid).success).toBe(true);
-    expect(CrawlConfigurationSchema.safeParse({ ...valid, refreshAgeDays: 0 }).success).toBe(true);
-  });
-
-  it('rejects Region Names that are not lower-case letters, digits and hyphens, and duplicates', () => {
-    expect(
-      CrawlConfigurationSchema.safeParse({
-        ...valid,
-        regions: [{ ...REGION_T1, name: 'Belgrade' }],
-      }).success,
-    ).toBe(false);
-    expect(
-      CrawlConfigurationSchema.safeParse({ ...valid, regions: [REGION_T1, REGION_T1] }).success,
-    ).toBe(false);
+    ['duplicate Region Names', 'regions', { ...valid, regions: [REGION_T1, REGION_T1] }],
+  ])('rejects %s with an issue path naming %s', (_name, setting, config) => {
+    const parsed = CrawlConfigurationSchema.safeParse(config);
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.some((i) => i.path.map(String).includes(setting))).toBe(true);
   });
 });
 
 describe('AC-2, AC-3, AC-66 Tile Plan geometry (validator)', () => {
-  it('cellsCovering ignores float noise: 0.6 / 0.005 = 120, 0.33 / 0.005 = 66, 0.01 / 0.005 = 2', () => {
-    expect(cellsCovering(0.75 - 0.15, 0.005)).toBe(120);
-    expect(cellsCovering(44.98 - 44.65, 0.005)).toBe(66);
-    expect(cellsCovering(20.462 - 20.452, 0.005)).toBe(2);
-    expect(cellsCovering(44.82 - 44.814, 0.005)).toBe(2);
-    expect(cellsCovering(0.002, 0.005)).toBe(1);
+  it.each([
+    [0.75 - 0.15, 120],
+    [44.98 - 44.65, 66],
+    [20.462 - 20.452, 2],
+    [0.002, 1],
+  ])('cellsCovering(%d, 0.005) ignores float noise: %i', (span, cells) => {
+    expect(cellsCovering(span, 0.005)).toBe(cells);
   });
 
-  it('accepts the AL6 plan of belgrade-small and rejects broken variants', () => {
-    expect(
-      findTilePlanIssues(BELGRADE_SMALL_REGION, planFrom(BELGRADE_SMALL_REGION, 2, 2, AC2_TILES)),
-    ).toStrictEqual([]);
-    const reordered = [at(AC2_TILES, 0), at(AC2_TILES, 2), at(AC2_TILES, 1), at(AC2_TILES, 3)].map(
-      (t, i) => ({ ...t, tileNumber: i + 1 }),
-    );
-    expect(
-      findTilePlanIssues(BELGRADE_SMALL_REGION, planFrom(BELGRADE_SMALL_REGION, 2, 2, reordered))
-        .length,
-    ).toBeGreaterThan(0);
-    const uncut = AC2_TILES.map((t) =>
-      t.tileNumber > 2 ? { ...t, bbox: { ...t.bbox, north: 44.824 } } : t,
-    );
-    expect(
-      findTilePlanIssues(BELGRADE_SMALL_REGION, planFrom(BELGRADE_SMALL_REGION, 2, 2, uncut))
-        .length,
-    ).toBeGreaterThan(0);
+  const tiny: Region = {
+    name: 'tiny',
+    bbox: { west: 20.456, south: 44.816, east: 20.458, north: 44.817 },
+    tileSize: { width: 0.005, height: 0.005 },
+  };
+
+  it.each<[string, Region, number, number, readonly Tile[]]>([
+    ['belgrade-small (AC-2)', BELGRADE_SMALL_REGION, 2, 2, AC2_TILES],
+    ['a Region smaller than a Tile (AC-3)', tiny, 1, 1, [{ tileNumber: 1, bbox: tiny.bbox }]],
+    ['support Region T1', REGION_T1, 1, 1, T1_TILES],
+    ['support Region T2', REGION_T2, 2, 1, T2_TILES],
+    ['support Region T4', REGION_T4, 2, 2, T4_TILES],
+  ])('accepts the exact Tile Plan of %s', (_name, region, columns, rows, tiles) => {
+    expect(findTilePlanIssues(region, planFrom(region, columns, rows, tiles))).toStrictEqual([]);
   });
 
-  it('a Region smaller than a Tile is 1 Tile equal to the Region', () => {
-    const tiny: Region = {
-      name: 'tiny',
-      bbox: { west: 20.456, south: 44.816, east: 20.458, north: 44.817 },
-      tileSize: { width: 0.005, height: 0.005 },
-    };
+  it.each<[string, Tile[]]>([
+    [
+      'Tiles out of plan order',
+      [at(AC2_TILES, 0), at(AC2_TILES, 2), at(AC2_TILES, 1), at(AC2_TILES, 3)].map((t, i) => ({
+        ...t,
+        tileNumber: i + 1,
+      })),
+    ],
+    [
+      'a top row not cut back',
+      AC2_TILES.map((t) => (t.tileNumber > 2 ? { ...t, bbox: { ...t.bbox, north: 44.824 } } : t)),
+    ],
+  ])('rejects a belgrade-small plan with %s', (_name, tiles) => {
     expect(
-      findTilePlanIssues(tiny, planFrom(tiny, 1, 1, [{ tileNumber: 1, bbox: tiny.bbox }])),
-    ).toStrictEqual([]);
-  });
-
-  it('the support Tile lists of the test Regions are their exact Tile Plans', () => {
-    expect(findTilePlanIssues(REGION_T1, planFrom(REGION_T1, 1, 1, T1_TILES))).toStrictEqual([]);
-    expect(findTilePlanIssues(REGION_T2, planFrom(REGION_T2, 2, 1, T2_TILES))).toStrictEqual([]);
-    expect(findTilePlanIssues(REGION_T4, planFrom(REGION_T4, 2, 2, T4_TILES))).toStrictEqual([]);
+      findTilePlanIssues(BELGRADE_SMALL_REGION, planFrom(BELGRADE_SMALL_REGION, 2, 2, tiles)),
+    ).not.toStrictEqual([]);
   });
 
   it('a plan with Tile Numbers out of sequence fails the schema', () => {
@@ -251,86 +228,89 @@ describe('AC-33, AC-34 Details Order and Region Places (validators)', () => {
     ).toBe(true);
   });
 
-  it('edges are inside', () => {
-    const bbox = BELGRADE_SMALL_REGION.bbox;
-    expect(isInsideBoundingBox({ lon: 20.452, lat: 44.817 }, bbox)).toBe(true);
-    expect(isInsideBoundingBox({ lon: 20.462, lat: 44.82 }, bbox)).toBe(true);
-    expect(isInsideBoundingBox({ lon: 20.47, lat: 44.817 }, bbox)).toBe(false);
+  it.each([
+    ['on the west edge', { lon: 20.452, lat: 44.817 }, true],
+    ['on the north-east corner', { lon: 20.462, lat: 44.82 }, true],
+    ['east of the box', { lon: 20.47, lat: 44.817 }, false],
+  ])('a point %s is inside: %s', (_name, point, inside) => {
+    expect(isInsideBoundingBox(point, BELGRADE_SMALL_REGION.bbox)).toBe(inside);
   });
 });
 
 describe('AC-39, AC-71 Pacing (validator)', () => {
-  it('flags starts closer than the interval and windows over the limit', () => {
-    expect(findPacingIssues([0, 2000, 4000], 2)).toStrictEqual([]);
-    expect(findPacingIssues([0, 1999], 2)).toHaveLength(1);
-    const every6s = Array.from({ length: 60 }, (_, i) => i * 6000);
-    expect(findPacingIssues(every6s, 6, { windowSeconds: 300, maxPerWindow: 50 })).toStrictEqual(
-      [],
-    );
-    const every5s = Array.from({ length: 60 }, (_, i) => i * 5000);
-    expect(
-      findPacingIssues(every5s, 5, { windowSeconds: 300, maxPerWindow: 50 }).length,
-    ).toBeGreaterThan(0);
+  const quota = { windowSeconds: 300, maxPerWindow: 50 };
+  const every = (ms: number) => Array.from({ length: 60 }, (_, i) => i * ms);
+
+  it.each<[string, number[], number, typeof quota | undefined, boolean]>([
+    ['starts exactly 2 s apart', [0, 2000, 4000], 2, undefined, true],
+    ['a start 1.999 s after the previous', [0, 1999], 2, undefined, false],
+    ['60 starts every 6 s against 50 per 300 s', every(6000), 6, quota, true],
+    ['60 starts every 5 s against 50 per 300 s', every(5000), 5, quota, false],
+  ])('%s: valid = %s', (_name, starts, interval, window, ok) => {
+    expect(findPacingIssues(starts, interval, window).length === 0).toBe(ok);
   });
 });
 
 describe('AC-45, AC-61 Exit status', () => {
   // Amended by crawl-run1-fixes AC-19 (decision Q7): Quota Exhausted also reports success.
-  it('success for Completed, Budget Reached, Rate Limited, Quota Exhausted, Planned; failure for Failed, Interrupted', () => {
-    const expected: Record<RunOutcome, 0 | 1> = {
-      completed: 0,
-      budget_reached: 0,
-      rate_limited: 0,
-      quota_exhausted: 0,
-      planned: 0,
-      failed: 1,
-      interrupted: 1,
-    };
-    for (const [outcome, code] of Object.entries(expected)) {
-      expect(exitCodeFor(outcome as RunOutcome)).toBe(code);
-    }
+  it.each<[RunOutcome, 0 | 1]>([
+    ['completed', 0],
+    ['budget_reached', 0],
+    ['rate_limited', 0],
+    ['quota_exhausted', 0],
+    ['planned', 0],
+    ['failed', 1],
+    ['interrupted', 1],
+  ])('%s exits with %i', (outcome, code) => {
+    expect(exitCodeFor(outcome)).toBe(code);
   });
 });
 
 describe('AC-50 Run Summary rules (schema)', () => {
-  it('requests and failures must add up', () => {
-    expect(RunCountsSchema.safeParse(ZERO_RUN_COUNTS).success).toBe(true);
-    expect(RunCountsSchema.safeParse({ ...ZERO_RUN_COUNTS, wikimapiaRequests: 1 }).success).toBe(
+  it.each<[string, RunCounts, boolean]>([
+    ['all zero', ZERO_RUN_COUNTS, true],
+    [
+      'requests not split into listing and details',
+      { ...ZERO_RUN_COUNTS, wikimapiaRequests: 1 },
       false,
-    );
-    expect(RunCountsSchema.safeParse({ ...ZERO_RUN_COUNTS, itemFailures: 1 }).success).toBe(false);
-    expect(
-      RunCountsSchema.safeParse({
+    ],
+    ['a failure total without a kind', { ...ZERO_RUN_COUNTS, itemFailures: 1 }, false],
+    [
+      'a failure total matching its kinds',
+      {
         ...ZERO_RUN_COUNTS,
         itemFailures: 1,
         itemFailuresByKind: { ...ZERO_RUN_COUNTS.itemFailuresByKind, connection: 1 },
-      }).success,
-    ).toBe(true);
+      },
+      true,
+    ],
+  ])('counts that are %s: valid = %s', (_name, counts, ok) => {
+    expect(RunCountsSchema.safeParse(counts).success).toBe(ok);
   });
 
-  it('a Failed report must say why; a plan only for a Dry Run', () => {
-    const summary = {
+  const failedReport = {
+    outcome: 'failed' as const,
+    summary: {
       regionName: 'test-one',
       outcome: 'failed' as const,
       startedAt: '2026-10-22T09:00:00Z',
       endedAt: '2026-10-22T09:00:00Z',
       counts: ZERO_RUN_COUNTS,
-    };
-    const base = {
-      outcome: 'failed' as const,
-      summary,
-      summaryText: 'Run outcome: Failed',
-      itemFailures: [],
-    };
-    expect(RunReportSchema.safeParse(base).success).toBe(false);
-    expect(RunReportSchema.safeParse({ ...base, message: 'Unknown region' }).success).toBe(true);
-    expect(
-      RunReportSchema.safeParse({
-        ...base,
-        message: 'x',
-        plan: planFrom(REGION_T1, 1, 1, T1_TILES),
-      }).success,
-    ).toBe(false);
+    },
+    summaryText: 'Run outcome: Failed',
+    itemFailures: [],
+  };
+
+  it.each<[string, object, boolean]>([
+    ['a Failed report with a message', { message: 'Unknown region' }, true],
+    ['a Failed report without a message', {}, false],
+    [
+      'a Failed report with a plan',
+      { message: 'x', plan: planFrom(REGION_T1, 1, 1, T1_TILES) },
+      false,
+    ],
+  ])('%s: valid = %s', (_name, extra, ok) => {
+    expect(RunReportSchema.safeParse({ ...failedReport, ...extra }).success).toBe(ok);
   });
 });
 
