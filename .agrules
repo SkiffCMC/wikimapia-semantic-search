@@ -8,12 +8,12 @@
 ## 1. Domain Architectural Constraints (AL4 Design)
 * **Four Decoupled Components:** Frontend (Next.js), Backend API & search engine, Storage (Postgres + PostGIS + pgvector), Data pipeline & MCP adaptor. Components talk only through declared interfaces: the frontend and the MCP server call the backend's search API, and never query the database directly.
 * **Spatial-Filtered Hybrid Search:** When the intent carries spatial bounds, the PostGIS filter (`ST_DWithin`, bbox) restricts candidates and the vector similarity (`<=>`) ranks them. Results outside the requested bounds are never returned.
-* **LLM Only Where Needed:** The LLM (`gpt-4o-mini`) is used for intent parsing and reranking only. Retrieval itself is SQL. Search must still return results (with degraded ranking) if the reranking call fails.
+* **LLM Only Where Needed:** The LLM (Claude Haiku 5.5, `claude-haiku-5-5`) is used for intent parsing and reranking only. Retrieval itself is SQL. Search must still return results (with degraded ranking) if the reranking call fails.
 * **Offline Ingestion:** Crawling the Wikimapia API and embedding are offline batch jobs, idempotent and resumable. The crawler respects the API's rate limit and backs off on errors. Search never calls the Wikimapia API live, and never computes embeddings for stored content, only for the user's query.
 
 ## 2. Boundary Rules (AL5 Contracts)
 * **[Zod/AL5 Enforced] Validated LLM Output:** Every LLM response (intent JSON, rerank scores) is parsed with a Zod schema before use. Invalid output is a handled error, never passed through.
-* **[Zod/AL5 Enforced] One Embedding Model per Column:** Vectors are 1536-dim from `text-embedding-3-small`. Schemas reject any other length. Each stored embedding records the model name that produced it.
+* **[Zod/AL5 Enforced] One Embedding Model per Column:** Vectors are 1024-dim from Voyage AI `voyage-4`. Schemas reject any other length. Each stored embedding records the model name that produced it. Stored text is embedded with `input_type: "document"`, search queries with `input_type: "query"`.
 * **[Zod/AL5 Enforced] Result Cards:** Every result carries `place_id`, title, a direct link of the form `https://wikimapia.org/{place_id}/ru/{title_slug}`, category info, and Wikimapia attribution.
 
 ## 3. Database Constraints (AL4 Architecture / AL2 Implementation)
@@ -26,7 +26,7 @@
 * **No Data or Secrets in Git:** Bulk crawl output, generated embeddings and `.env` are never committed.
 * **Recorded API Fixtures:** Tests of Wikimapia API handling use real responses recorded from the API, stored in `contracts/fixtures/wikimapia/` (owned by AL5; lower layers read them but never edit them). Each fixture is trimmed to the few places and comments a test needs, has the API key removed from any recorded URL or header, and the folder carries a `README.md` crediting Wikimapia (CC BY-NC-SA 3.0). Other fixtures (DB rows, LLM output, vectors) are small and synthetic.
 * **[Zod/AL5 Enforced] No Commenter IPs:** The `user_ip` field of Wikimapia comments is dropped at the API client boundary: the parsed comment type has no such field, it is never stored in the database, and recorded fixtures have it removed. Author `name` is kept, since CC BY attribution requires crediting authors.
-* **No Live External Calls in Tests:** OpenAI and network calls are mocked in every test.
+* **No Live External Calls in Tests:** Anthropic, Voyage, Wikimapia and other network calls are mocked in every test.
 * **Strict Types Only (AL5 -> AL2):** No implicit `any` or unhandled `unknown` at boundaries. All I/O is typed through `z.infer`.
 
 ## 5. Code Style (AL4 Design / AL2 Implementation, all TypeScript incl. `contracts/` and `tests/`)

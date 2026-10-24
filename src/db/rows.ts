@@ -249,3 +249,41 @@ export const ParkingRowSchema = z.object({
   details_fetched_at_text: z.string().nullable(),
   released_at_text: z.string().nullable(),
 });
+
+// ---------------------------------------------------------------------------
+// Embedding Records (AL4 embeddings 1.4.8, 2.1)
+// ---------------------------------------------------------------------------
+
+/** `place_embeddings`, the vector as `embedding::text`, `embedded_at` formatted with `to_char`. */
+export const EmbeddingRowSchema = z.object({
+  place_id: BigintSchema,
+  embedding_text: z.string(),
+  embedding_model: z.string(),
+  document_fingerprint: z.string(),
+  embedded_at_text: z.string(),
+});
+
+/** Summary-Only Places, Detailed Places and Embedding Records (int8 counts). */
+export const EmbeddingCountsRowSchema = z.object({
+  summary_only_places: BigintSchema,
+  detailed_places: BigintSchema,
+  embedding_records: BigintSchema,
+});
+
+/** `pg_attribute.atttypmod` of the vector column (pgvector: the dimension count). */
+export const TypmodRowSchema = z.object({
+  atttypmod: z.number().int(),
+});
+
+/** One primary-key column name, in key order. */
+export const KeyColumnRowSchema = z.object({
+  attname: z.string(),
+});
+
+/** One index on the vector column. */
+export const VectorIndexRowSchema = z.object({
+  name: z.string(),
+  method: z.string(),
+  operator_class: z.string(),
+  partial: z.boolean(),
+});

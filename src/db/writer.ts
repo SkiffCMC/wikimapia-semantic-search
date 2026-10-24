@@ -20,3 +20,16 @@ export function createWriter(onWrite: WriteHook | undefined): Writer {
     },
   };
 }
+
+/**
+ * One counter shared by every writer built on the returned hook (AL4 embeddings 0.1
+ * "Write-hook numbering"): the caller's hook sees 1, 2, 3, ... across every step.
+ */
+export function createRunWideHook(onWrite: WriteHook | undefined): WriteHook | undefined {
+  if (onWrite === undefined) return undefined;
+  let n = 0;
+  return async () => {
+    n += 1;
+    await onWrite(n);
+  };
+}

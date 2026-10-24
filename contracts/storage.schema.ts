@@ -580,8 +580,9 @@ export interface SchemaSetup {
   /**
    * Removes every Place, Comment, Tag and Place-Tag Link, keeping the structure (AC-61), and,
    * once the `hydration` Schema Setup step exists, all Crawl Progress and Run Records too
-   * (hydration AC-57, gap G3). Refuses with `store_unavailable` unless the database name ends
-   * in `_test`.
+   * (hydration AC-57, gap G3), and, once the `embeddings` Schema Setup step exists, every
+   * Embedding Record too (embeddings AC-58). Refuses with `store_unavailable` unless the
+   * database name ends in `_test`.
    */
   emptyStore(): Promise<EmptyResult>;
   /** Releases the connection. Never rejects. */

@@ -13,15 +13,18 @@
     "db:up": "docker compose up -d --build --wait",
     "db:down": "docker compose down",
     "db:reset": "docker compose down -v && docker compose up -d --build --wait",
-    "test:db": "vitest run --no-color contracts/storage.test.ts contracts/hydration.test.ts tests/db tests/crawl",
+    "test:db": "vitest run --no-color contracts/storage.test.ts contracts/hydration.test.ts tests/db tests/crawl contracts/embeddings.test.ts tests/embed",
     "db:migrate": "tsx scripts/db-migrate.ts",
     "db:status": "tsx scripts/db-status.ts",
-    "crawl": "tsx scripts/crawl.ts"
+    "crawl": "tsx scripts/crawl.ts",
+    "embed": "tsx scripts/embed.ts"
   },
   "dependencies": {
     "knex": "^3.3.0",
     "objection": "^3.9.1",
     "pg": "^8.23.1",
+    "pgvector": "^0.3.0",
+    "voyageai": "0.4.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
