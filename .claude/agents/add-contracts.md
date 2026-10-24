@@ -33,10 +33,15 @@ Read `.agrules` first; section 2 lists rules that must be enforced at this layer
    - **Import the real subject under test.** The schema file declares the feature's public entry point: an exported function type (e.g. `SearchPlacesFn`) and an `ENTRY_POINT` constant holding the module path under `src/` that must export it. The test file imports the function from that path and calls it. Before AL2 exists this import fails; that is the expected red state.
    - **Never mock the subject under test.** No `vi.fn()` stand-in, `mockReturnValue` or `mockImplementation` for the function the contract is about: a test that asserts on a value it supplied itself passes whatever the code does. Mock only external collaborators (LLM providers, network, clock, randomness).
    - Assert properties, not fixed outputs, where the result depends on ranking or LLM output (every result lies inside the requested radius, results are sorted by score, every result carries a valid Wikimapia link and attribution).
-   - Tests of the schemas and validators themselves (e.g. the vector-length gate rejecting a 1536-dim vector) are allowed in addition, in a separate `describe`, and do pass at this stage.
+   - Tests of the custom refinements and validators themselves (e.g. the vector-length gate rejecting a 1536-dim vector) are allowed in addition, in a separate `describe`, and do pass at this stage. Plain Zod checks (types, required fields, `min`/`max`, enums) are not tested; see Testing Constraints.
    - For an HTTP-facing feature, add API tests through the HTTP framework's in-process request helper (e.g. Fastify `inject()`), validated against the schemas.
 
 3. **Bug contracts:** When triggered by a bug report instead of a new requirement, add one failing test that reproduces the bug to the existing contract test file. Do not touch `src/`.
+
+4. **Testing Constraints (Anti-Bloat):**
+   - **Trust Zod:** Never write `it()` blocks that only re-check what a Zod schema validates natively (basic types, empty strings, required fields, number ranges, enums).
+   - **Parameterized Tests (Data-Driven):** For negative gates, boundary conditions and edge cases, use Vitest `it.each` / `test.each` tables instead of duplicating test blocks.
+   - **Equivalence Partitioning:** Per AL6 scenario, write ONE happy-path test, ONE parameterized negative/boundary block, and ONE edge-case block. Pick one representative input per equivalence class; do not over-insure. Exhaustive combinations belong to AL2 unit tests, if anywhere.
 
 Every acceptance scenario must be covered by at least one contract test, or listed in your report as uncovered with the reason.
 
