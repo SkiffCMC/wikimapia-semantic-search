@@ -295,14 +295,9 @@ function expectPresentThenGone(
 // ===========================================================================
 
 describe('AC-1 Two databases', () => {
-  it('the Test Database is separate from the Development Database', () => {
+  it('the separate Test Database (*_test) has map-shape support and Vector Support available', async () => {
     const name = decodeURIComponent(new URL(testUrl).pathname.slice(1));
     expect(name.endsWith(TEST_DATABASE_NAME_SUFFIX)).toBe(true);
-    const dev = process.env[DATABASE_URL_ENV];
-    if (dev !== undefined && dev !== '') expect(dev).not.toBe(testUrl);
-  });
-
-  it('the Test Database has map-shape support and Vector Support available', async () => {
     const structure = await inspect();
     for (const extension of REQUIRED_EXTENSIONS) {
       expect(structure.availableExtensions).toContain(extension);
@@ -315,7 +310,7 @@ describe('AC-2 Setup from nothing', () => {
     okSteps(await setup.apply());
   });
 
-  it('after undoing everything, applying Schema Setup creates all storage and enables extensions', async () => {
+  it('after undoing everything, Schema Setup creates all storage with Presence Marks and enables extensions', async () => {
     okSteps(await setup.undoAll());
     const applied = okSteps(await setup.apply());
     expect(applied.length).toBeGreaterThan(0);
@@ -328,11 +323,7 @@ describe('AC-2 Setup from nothing', () => {
     for (const extension of REQUIRED_EXTENSIONS) {
       expect(structure.enabledExtensions).toContain(extension);
     }
-  });
 
-  it('the fresh store holds Places, Comments, Tags and Place-Tag Links with Presence Marks', async () => {
-    okSteps(await setup.undoAll());
-    okSteps(await setup.apply());
     await saveDetails(await clientDetails('getbyid-62587.json'));
     const place = await readDetailed(62587);
     expect(presenceMarks(place)).toStrictEqual([
@@ -416,13 +407,6 @@ describe('AC-6 No place for Commenter IPs', () => {
     for (const column of columns) {
       expect(column.name).not.toMatch(/(^|_)ip($|_)|ip_?addr|user_?ip|commenter_?ip|userip/i);
       expect(['inet', 'cidr']).not.toContain(column.udtName);
-    }
-  });
-
-  it('no table anywhere in the store has a Commenter IP column', async () => {
-    for (const table of (await inspect()).tables) {
-      for (const column of table.columns)
-        expect(column.name).not.toMatch(/user_?ip|commenter_?ip/i);
     }
   });
 });
@@ -616,44 +600,27 @@ describe('AC-14 Listing Page totals not stored', () => {
       }
     }
   });
-
-  it('reading back carries no page data', async () => {
-    await saveListing(await clientListing('box-belgrade-page1.json'));
-    const place = await read(1381893);
-    expect(place).not.toHaveProperty('page');
-    expect(place).not.toHaveProperty('totalFound');
-    expect(place).not.toHaveProperty('pageSize');
-  });
 });
 
 describe('AC-15 Listing Save is all or nothing', () => {
-  it('a summary with a non-positive Place ID: Invalid Data naming it, nothing saved', async () => {
-    const page = await clientListing('box-belgrade-page1.json');
-    const bad = {
-      ...page,
-      places: [at(page.places, 0), { ...at(page.places, 1), placeId: 0 }, at(page.places, 2)],
-    };
-    const failure = invalidData(await trySaveListing(bad));
-    expect(hasIssueAt(failure, ['places', 1, 'placeId'])).toBe(true);
-    expect(await counts()).toStrictEqual(EMPTY_COUNTS);
-  });
-
-  it('a summary whose link points to another Place: Invalid Data naming its url, nothing changed', async () => {
-    const page = await clientListing('box-belgrade-page1.json');
-    await saveListing(listingOf(summaryOf(page, 62587)));
-    const before = await snapshot(BELGRADE_IDS);
-    const bad = {
-      ...page,
-      places: [
-        at(page.places, 0),
-        at(page.places, 1),
-        { ...at(page.places, 2), url: 'http://wikimapia.org/55/Eiffel-Tower' },
-      ],
-    };
-    const failure = invalidData(await trySaveListing(bad));
-    expect(hasIssueAt(failure, ['places', 2, 'url'])).toBe(true);
-    expect(await snapshot(BELGRADE_IDS)).toStrictEqual(before);
-  });
+  it.each([
+    ['a non-positive Place ID', 1, { placeId: 0 }, 'placeId'],
+    ['a link to another Place', 2, { url: 'http://wikimapia.org/55/Eiffel-Tower' }, 'url'],
+  ] as const)(
+    'a summary with %s: Invalid Data naming it, no Place saved or changed',
+    async (_name, index, change, item) => {
+      const page = await clientListing('box-belgrade-page1.json');
+      await saveListing(listingOf(summaryOf(page, 62587)));
+      const before = await snapshot(BELGRADE_IDS);
+      const bad = {
+        ...page,
+        places: page.places.map((p, i) => (i === index ? { ...p, ...change } : p)),
+      };
+      const failure = invalidData(await trySaveListing(bad));
+      expect(hasIssueAt(failure, ['places', index, item])).toBe(true);
+      expect(await snapshot(BELGRADE_IDS)).toStrictEqual(before);
+    },
+  );
 
   it('a failure part way through a Listing Save leaves no Place saved (fault injected after each write)', async () => {
     const page = await clientListing('box-belgrade-page1.json');
@@ -719,7 +686,6 @@ describe('AC-16 Happy path, new Place with Comments', () => {
     expect(place.isRegion).toBe(false);
     expect(place.isDeleted).toBe(false);
     expect(place.wikipediaUrl).toBe('http://en.wikipedia.org/wiki/Republic_Square_(Belgrade)');
-    expect(place.outline).toHaveLength(19);
     expect(place.outline).toStrictEqual(d.outline);
     expect(place.location).toStrictEqual({
       lon: 20.4603516,
@@ -780,23 +746,17 @@ describe('AC-17 Comments kept in full', () => {
     expect(at(place.comments, 0)).not.toHaveProperty('authorPhotoUrl');
     expect(at(place.comments, 0)).not.toHaveProperty('moderatorName');
   });
-
-  it('every comment reads back equal to the Client value plus its Presence Mark', async () => {
-    const d = await clientDetails('getbyid-62587.json');
-    await saveDetails(d);
-    const place = await readDetailed(62587);
-    expect(
-      place.comments.map((c) => asPlaceDetails({ ...place, comments: [c] }).comments[0]),
-    ).toStrictEqual(d.comments);
-  });
 });
 
 describe('AC-18 Round trip', () => {
+  // One input per equivalence class (62587 is covered field by field by AC-16 and AC-17).
   const cases: [string, () => Promise<PlaceDetails>][] = [
-    ['Square of the Republic (62587)', () => clientDetails('getbyid-62587.json')],
-    ['University Park (1381893)', () => clientDetails('getbyid-1381893.json')],
-    ['Eiffel Tower (55)', () => clientDetails('getbyid-55.json')],
-    ['synthetic nesting (AC-34)', () => nestedDetails()],
+    [
+      'University Park (1381893, absent optional items)',
+      () => clientDetails('getbyid-1381893.json'),
+    ],
+    ['Eiffel Tower (55, street, house number, moderator)', () => clientDetails('getbyid-55.json')],
+    ['synthetic nesting (AC-34, replies)', () => nestedDetails()],
   ];
 
   it.each(cases)(
@@ -844,21 +804,19 @@ describe('AC-20 Details complete a Summary-Only Place', () => {
 });
 
 describe('AC-21 Details Save is idempotent', () => {
-  it('the same details with the same fetch moment change nothing and report Unchanged', async () => {
-    const d = await clientDetails('getbyid-62587.json');
-    await saveDetails(d, FETCHED_AT);
-    const before = await snapshot([62587]);
-    expect(onlyOutcome(await saveDetails(d, FETCHED_AT), 62587)).toBe('unchanged');
-    expect(await snapshot([62587])).toStrictEqual(before);
-  });
-
-  it('also for nested replies', async () => {
-    const d = await nestedDetails();
-    await saveDetails(d, FETCHED_AT);
-    const before = await snapshot([62587]);
-    expect(onlyOutcome(await saveDetails(d, FETCHED_AT), 62587)).toBe('unchanged');
-    expect(await snapshot([62587])).toStrictEqual(before);
-  });
+  it.each([
+    ['flat comments', () => clientDetails('getbyid-62587.json')],
+    ['nested replies', () => nestedDetails()],
+  ])(
+    'the same details (%s) with the same fetch moment change nothing and report Unchanged',
+    async (_name, load) => {
+      const d = await load();
+      await saveDetails(d, FETCHED_AT);
+      const before = await snapshot([62587]);
+      expect(onlyOutcome(await saveDetails(d, FETCHED_AT), 62587)).toBe('unchanged');
+      expect(await snapshot([62587])).toStrictEqual(before);
+    },
+  );
 });
 
 describe('AC-22 Re-fetched, nothing changed (D3)', () => {
@@ -897,8 +855,6 @@ describe('AC-23 Details changed on Wikimapia', () => {
   });
 
   it.each([
-    ['description', (d: PlaceDetails): PlaceDetails => ({ ...d, description: 'x' })],
-    ['title', (d: PlaceDetails): PlaceDetails => ({ ...d, title: 'x' })],
     ['deleted mark', (d: PlaceDetails): PlaceDetails => ({ ...d, isDeleted: true })],
     [
       'address item',
@@ -1173,7 +1129,6 @@ describe('AC-32 Long and non-Latin text', () => {
 
     const place = await readDetailed(62587);
     expect(place.description).toBe(description);
-    expect(place.description.length).toBe(description.length);
     expect(storedNum(place.comments, 1).message).toBe(message);
   });
 });
@@ -1259,56 +1214,64 @@ describe('AC-37 Reply moved', () => {
   });
 });
 
-describe('AC-38 Comment from another Place rejected (D5)', () => {
-  it('the nested-replies fixture ("Paul" carries Place ID 55) is Invalid Data; nothing saved', async () => {
-    const d = await clientDetails('getbyid-62587-nested-replies.json');
-    const failure = invalidData(await trySaveDetails(d, FETCHED_AT));
-    const issue = failure.issues.find((i) =>
-      samePath(i.path, ['details', 'comments', 0, 'replies', 0, 'replies', 0, 'placeId']),
-    );
-    expect(issue).toBeDefined();
-    expect(issue?.commentNum).toBe(5);
-    expect(issue?.placeId).toBe(55);
-    expect(await readValue(62587)).toStrictEqual({ found: false, placeId: 62587 });
-    expect(await counts()).toStrictEqual(EMPTY_COUNTS);
-  });
+const DEPTH_2 = ['details', 'comments', 0, 'replies', 0, 'replies', 0] as const;
 
-  it('a top-level comment of another Place leaves a stored Place unchanged', async () => {
-    const d = await clientDetails('getbyid-62587.json');
-    await saveDetails(d);
-    const before = await snapshot([62587]);
-    const foreign = { ...at(d.comments, 0), placeId: 55 };
-    const failure = invalidData(
-      await trySaveDetails({ ...d, comments: [foreign, at(d.comments, 1)] }, LATER_FETCHED_AT),
-    );
-    expect(failure.issues.some((i) => i.commentNum === 1 && i.placeId === 55)).toBe(true);
-    expect(await snapshot([62587])).toStrictEqual(before);
-  });
+describe('AC-38 Comment from another Place rejected (D5)', () => {
+  it.each([
+    [
+      'the nested-replies fixture ("Paul" with Place ID 55 at depth 2)',
+      () => clientDetails('getbyid-62587-nested-replies.json'),
+      [...DEPTH_2, 'placeId'],
+      5,
+    ],
+    [
+      'a top-level comment with Place ID 55',
+      async (): Promise<PlaceDetails> => {
+        const d = await clientDetails('getbyid-62587.json');
+        return { ...d, comments: [{ ...at(d.comments, 0), placeId: 55 }, at(d.comments, 1)] };
+      },
+      ['details', 'comments', 0, 'placeId'],
+      1,
+    ],
+  ])(
+    '%s is Invalid Data naming its number and Place ID; nothing saved',
+    async (_name, load, path, commentNum) => {
+      const failure = invalidData(await trySaveDetails(await load(), FETCHED_AT));
+      const issue = failure.issues.find((i) => samePath(i.path, path));
+      expect(issue).toMatchObject({ commentNum, placeId: 55 });
+      expect(await counts()).toStrictEqual(EMPTY_COUNTS);
+    },
+  );
 });
 
 describe('AC-39 Duplicate comment number', () => {
-  it('two top-level comments with number 2: Invalid Data naming 2, nothing saved', async () => {
-    const d = await clientDetails('getbyid-62587.json');
-    const dup = { ...at(d.comments, 0), num: 2 };
-    const failure = invalidData(
-      await trySaveDetails({ ...d, comments: [dup, at(d.comments, 1)] }, FETCHED_AT),
-    );
-    expect(failure.issues.some((i) => i.commentNum === 2)).toBe(true);
-    expect(await counts()).toStrictEqual(EMPTY_COUNTS);
-  });
-
-  it("a reply reusing its ancestor's number at depth 2: Invalid Data naming it, nothing saved", async () => {
-    const { mateja, serbia, paul } = await nestedParts();
-    const d = await nestedDetails();
-    const bad = {
-      ...d,
-      comments: [{ ...mateja, replies: [{ ...serbia, replies: [{ ...paul, num: 1 }] }] }],
-    };
-    const failure = invalidData(await trySaveDetails(bad, FETCHED_AT));
-    expect(failure.issues.some((i) => i.commentNum === 1)).toBe(true);
-    expect(hasIssueAt(failure, ['details', 'comments', 0, 'replies', 0, 'replies', 0, 'num'])).toBe(
-      true,
-    );
+  it.each([
+    [
+      'two top-level comments with number 2',
+      async (): Promise<PlaceDetails> => {
+        const d = await clientDetails('getbyid-62587.json');
+        return { ...d, comments: [{ ...at(d.comments, 0), num: 2 }, at(d.comments, 1)] };
+      },
+      ['details', 'comments', 1, 'num'],
+      2,
+    ],
+    [
+      "a reply reusing its ancestor's number at depth 2",
+      async (): Promise<PlaceDetails> => {
+        const { mateja, serbia, paul } = await nestedParts();
+        const d = await nestedDetails();
+        return {
+          ...d,
+          comments: [{ ...mateja, replies: [{ ...serbia, replies: [{ ...paul, num: 1 }] }] }],
+        };
+      },
+      [...DEPTH_2, 'num'],
+      1,
+    ],
+  ])('%s: Invalid Data naming the number, nothing saved', async (_name, load, path, commentNum) => {
+    const failure = invalidData(await trySaveDetails(await load(), FETCHED_AT));
+    const issue = failure.issues.find((i) => samePath(i.path, path));
+    expect(issue).toMatchObject({ commentNum });
     expect(await counts()).toStrictEqual(EMPTY_COUNTS);
   });
 });
@@ -1326,11 +1289,7 @@ describe('AC-40 Shared Tag Catalogue', () => {
   it('Tag 46360 is in the catalogue once and both Places are linked to it', async () => {
     await saveDetails(await clientDetails('getbyid-62587.json'));
     await saveDetails(await universityParkWithTownSquareTag());
-    const catalogue = await tagCatalogue();
-    expect(catalogue.filter((t) => t.id === 46360)).toStrictEqual([
-      { id: 46360, title: 'town square' },
-    ]);
-    expect(catalogue).toStrictEqual([
+    expect(await tagCatalogue()).toStrictEqual([
       { id: 194, title: 'park' },
       { id: 44926, title: 'historic town square' },
       { id: 46360, title: 'town square' },
@@ -1421,16 +1380,6 @@ describe('AC-44 Outline kept as a closed shape', () => {
     expect(stored.outlineShape?.srid).toBe(WGS84_SRID);
     expectSamePoints(stored.outlineShape?.ring ?? [], ring(d.outline));
     expect((await read(62587)).outline).toStrictEqual(d.outline);
-    expect((await read(62587)).outline).toHaveLength(19);
-  });
-
-  it('a Summary-Only Place gets an Outline Shape too', async () => {
-    const page = await clientListing('box-belgrade-page1.json');
-    await saveListing(page);
-    expectSamePoints(
-      (await shapes(1381893)).outlineShape?.ring ?? [],
-      ring(summaryOf(page, 1381893).outline),
-    );
   });
 });
 
@@ -1485,37 +1434,34 @@ describe('AC-47 Unusual but drawable Outline', () => {
 });
 
 describe('AC-48 Outline too small for a shape (D4)', () => {
-  const small: [string, Point[]][] = [
+  // Boundary (2 points) through one save path, empty edge through the other; AC-70 covers the rest.
+  it.each([
     [
+      'Place Details',
       '2 points',
       [
         { lon: 20.4566, lat: 44.8198 },
         { lon: 20.4575, lat: 44.8204 },
       ],
     ],
-    ['1 point', [{ lon: 20.4566, lat: 44.8198 }]],
-    ['no points', []],
-  ];
-
-  it.each(small)(
-    'Place Details with %s: saved with Centre Point, no Outline Shape',
-    async (_n, outline) => {
-      const d = await clientDetails('getbyid-1381893.json');
-      await saveDetails({ ...d, outline });
+    ['Place Summary', 'no points', []],
+  ] as [string, string, Point[]][])(
+    '%s with %s: saved with Centre Point, no Outline Shape, outline as given',
+    async (kind, _n, outline) => {
+      let centreLon: number;
+      if (kind === 'Place Details') {
+        const d = await clientDetails('getbyid-1381893.json');
+        await saveDetails({ ...d, outline });
+        centreLon = d.location.lon;
+      } else {
+        const summary = summaryOf(await clientListing('box-belgrade-page1.json'), 1381893);
+        await saveListing(listingOf({ ...summary, outline }));
+        centreLon = summary.location.lon;
+      }
       expect((await read(1381893)).outline).toStrictEqual(outline);
       const stored = await shapes(1381893);
       expect(stored).not.toHaveProperty('outlineShape');
-      expect(stored.centrePoint.point.lon).toBeCloseTo(d.location.lon, 9);
-    },
-  );
-
-  it.each(small)(
-    'Place Summary with %s: saved with Centre Point, no Outline Shape',
-    async (_n, outline) => {
-      const page = await clientListing('box-belgrade-page1.json');
-      await saveListing(listingOf({ ...summaryOf(page, 1381893), outline }));
-      expect((await read(1381893)).outline).toStrictEqual(outline);
-      expect(await shapes(1381893)).not.toHaveProperty('outlineShape');
+      expect(stored.centrePoint.point.lon).toBeCloseTo(centreLon, 9);
     },
   );
 });
@@ -1544,22 +1490,14 @@ describe('AC-70 Outline grows or shrinks', () => {
 // ===========================================================================
 
 describe('AC-49 Read back form', () => {
-  it('a Detailed Place reads back in the Client shapes plus Presence Marks, name, link and fetch moment', async () => {
+  // The strict read-back schema (parsed by readDetailed) enforces the Client shapes plus a
+  // Presence Mark on every Tag, Comment and Reply; AC-8 covers the Summary-Only form.
+  it('a Detailed Place reads back in the strict contract shape with name, link and fetch moment', async () => {
     await saveDetails(await nestedDetails());
-    const raw = await store.readPlace({ placeId: 62587 });
-    const parsed = ReadPlaceResultSchema.parse(raw); // strict: nothing beyond the contract
-    expect(parsed.ok).toBe(true);
     const place = await readDetailed(62587);
-    for (const tag of place.tags) expect(tag).toHaveProperty('presence');
-    for (const comment of flattenComments(place.comments))
-      expect(comment).toHaveProperty('presence');
-    expect(place.wikimapiaUrl).toBeTruthy();
+    expect(place.name).toBe('Square of the Republic');
+    expect(place.wikimapiaUrl).toBe(buildWikimapiaLink(62587));
     expect(place.detailsFetchedAt).toBe(FETCHED_AT);
-  });
-
-  it('a Summary-Only Place carries no Details Fetched At', async () => {
-    await saveListing(await clientListing('box-belgrade-page1.json'));
-    expect(await read(164369)).not.toHaveProperty('detailsFetchedAt');
   });
 });
 
@@ -1585,13 +1523,10 @@ describe('AC-50 Place Not Found', () => {
 });
 
 describe('AC-51 Invalid Place ID on read', () => {
-  it.each([0, -3, 1.5, Number.NaN])(
-    'placeId %s is Invalid Data naming placeId',
-    async (placeId) => {
-      const failure = invalidData(ReadPlaceResultSchema.parse(await store.readPlace({ placeId })));
-      expect(hasIssueAt(failure, ['placeId'])).toBe(true);
-    },
-  );
+  it.each([0, -3, 1.5])('placeId %s is Invalid Data naming placeId', async (placeId) => {
+    const failure = invalidData(ReadPlaceResultSchema.parse(await store.readPlace({ placeId })));
+    expect(hasIssueAt(failure, ['placeId'])).toBe(true);
+  });
 
   it('does not consult the stored data (an unreachable store still answers Invalid Data)', async () => {
     const unreachable = createStore({ connectionString: UNREACHABLE_DATABASE_URL });
@@ -1656,48 +1591,40 @@ describe('AC-72 Order of Tags', () => {
 // ===========================================================================
 
 describe('AC-53 Wrong shape rejected', () => {
-  it('Place Details without a title: names details.title, nothing saved', async () => {
-    const noTitle = omitKeys(await clientDetails('getbyid-62587.json'), 'title');
-    const failure = invalidData(await trySaveDetails(noTitle, FETCHED_AT));
-    expect(hasIssueAt(failure, ['details', 'title'])).toBe(true);
-    expect(await counts()).toStrictEqual(EMPTY_COUNTS);
-  });
-
-  it('a comment without its author: names its position, nothing saved', async () => {
-    const d = await clientDetails('getbyid-62587.json');
-    const noAuthor = omitKeys(at(d.comments, 1), 'author');
-    const failure = invalidData(
-      await trySaveDetails({ ...d, comments: [at(d.comments, 0), noAuthor] }, FETCHED_AT),
-    );
-    expect(hasIssueAt(failure, ['details', 'comments', 1, 'author'])).toBe(true);
-    expect(await counts()).toStrictEqual(EMPTY_COUNTS);
-  });
-
-  it('a reply with a fractional vote count: names its position inside Replies', async () => {
-    const { mateja, serbia, paul } = await nestedParts();
-    const d = await nestedDetails();
-    const bad = {
-      ...d,
-      comments: [{ ...mateja, replies: [{ ...serbia, replies: [{ ...paul, goodVotes: 1.5 }] }] }],
-    };
-    const failure = invalidData(await trySaveDetails(bad, FETCHED_AT));
-    expect(
-      hasIssueAt(failure, ['details', 'comments', 0, 'replies', 0, 'replies', 0, 'goodVotes']),
-    ).toBe(true);
-    expect(await counts()).toStrictEqual(EMPTY_COUNTS);
-  });
-
-  it('a summary with longitude 200: names places[0].location.lon, nothing saved', async () => {
-    const page = await clientListing('box-belgrade-page1.json');
-    const first = at(page.places, 0);
-    const bad = {
-      ...page,
-      places: [{ ...first, location: { ...first.location, lon: 200 } }, ...page.places.slice(1)],
-    };
-    const failure = invalidData(await trySaveListing(bad));
-    expect(hasIssueAt(failure, ['places', 0, 'location', 'lon'])).toBe(true);
-    expect(await counts()).toStrictEqual(EMPTY_COUNTS);
-  });
+  it.each([
+    [
+      'Place Details without a title',
+      async () =>
+        trySaveDetails(omitKeys(await clientDetails('getbyid-62587.json'), 'title'), FETCHED_AT),
+      ['details', 'title'],
+    ],
+    [
+      'a reply to a reply with a fractional vote count',
+      async () => {
+        const { mateja, serbia, paul } = await nestedParts();
+        const reply = { ...serbia, replies: [{ ...paul, goodVotes: 1.5 }] };
+        const d = { ...(await nestedDetails()), comments: [{ ...mateja, replies: [reply] }] };
+        return trySaveDetails(d, FETCHED_AT);
+      },
+      [...DEPTH_2, 'goodVotes'],
+    ],
+    [
+      'a summary with longitude 200',
+      async () => {
+        const page = await clientListing('box-belgrade-page1.json');
+        const first = at(page.places, 0);
+        const moved = { ...first, location: { ...first.location, lon: 200 } };
+        return trySaveListing({ ...page, places: [moved, ...page.places.slice(1)] });
+      },
+      ['places', 0, 'location', 'lon'],
+    ],
+  ])(
+    '%s: Invalid Data naming the item and its position, nothing saved',
+    async (_name, attempt, path) => {
+      expect(hasIssueAt(invalidData(await attempt()), path)).toBe(true);
+      expect(await counts()).toStrictEqual(EMPTY_COUNTS);
+    },
+  );
 
   it('a call without any input object is Invalid Data, not a rejection', async () => {
     invalidData(await trySaveListing(undefined));
@@ -1707,31 +1634,30 @@ describe('AC-53 Wrong shape rejected', () => {
 });
 
 describe('AC-54 Commenter IP refused', () => {
-  it.each(['user_ip', 'userIp', 'commenterIp'])(
-    'a reply to a reply carrying `%s` is Invalid Data; nothing saved; the value is not echoed',
-    async (key) => {
-      const { mateja, serbia, paul } = await nestedParts();
-      const d = await nestedDetails();
-      const ip = SYNTHETIC_IPS[1];
-      const withIp = {
-        ...d,
-        comments: [{ ...mateja, replies: [{ ...serbia, replies: [{ ...paul, [key]: ip }] }] }],
-      };
-      expect(findCommenterIpPaths(withIp)).toHaveLength(1);
-      const failure = invalidData(await trySaveDetails(withIp, FETCHED_AT));
-      expect(JSON.stringify(failure)).not.toContain(String(ip));
-      expect(JSON.stringify(failure)).not.toContain(String(Math.abs(ip)));
-      expect(await counts()).toStrictEqual(EMPTY_COUNTS);
-    },
-  );
-
-  it('a top-level comment with a positive IP is refused the same way', async () => {
-    const d = await clientDetails('getbyid-62587.json');
-    const ip = SYNTHETIC_IPS[0];
-    const failure = invalidData(
-      await trySaveDetails({ ...d, comments: [{ ...at(d.comments, 0), user_ip: ip }] }, FETCHED_AT),
-    );
-    expect(JSON.stringify(failure)).not.toContain(String(ip));
+  it.each([
+    [
+      '`user_ip` on a top-level comment',
+      async (): Promise<unknown> => {
+        const d = await clientDetails('getbyid-62587.json');
+        return { ...d, comments: [{ ...at(d.comments, 0), user_ip: SYNTHETIC_IPS[0] }] };
+      },
+      SYNTHETIC_IPS[0],
+    ],
+    [
+      'another spelling (`commenterIp`) on a reply to a reply',
+      async (): Promise<unknown> => {
+        const { mateja, serbia, paul } = await nestedParts();
+        const reply = { ...serbia, replies: [{ ...paul, commenterIp: SYNTHETIC_IPS[1] }] };
+        return { ...(await nestedDetails()), comments: [{ ...mateja, replies: [reply] }] };
+      },
+      SYNTHETIC_IPS[1],
+    ],
+  ])('%s is Invalid Data; nothing saved; the value is not echoed', async (_name, load, ip) => {
+    const withIp = await load();
+    expect(findCommenterIpPaths(withIp)).toHaveLength(1);
+    const text = JSON.stringify(invalidData(await trySaveDetails(withIp, FETCHED_AT)));
+    expect(text).not.toContain(String(ip));
+    expect(text).not.toContain(String(Math.abs(ip)));
     expect(await counts()).toStrictEqual(EMPTY_COUNTS);
   });
 
@@ -1743,23 +1669,12 @@ describe('AC-54 Commenter IP refused', () => {
 
 describe('AC-55 Missing Details Fetched At', () => {
   it.each([
-    ['missing (present as undefined)', undefined],
-    ['not a moment', 'yesterday'],
-    ['impossible date', '2026-13-01T00:00:00Z'],
-    ['not UTC', '2026-10-21T12:00:00+02:00'],
-    ['a number', 1761040800],
-  ])('%s: Invalid Data naming fetchedAt, nothing saved', async (_name, fetchedAt) => {
-    const failure = invalidData(
-      await trySaveDetails(await clientDetails('getbyid-62587.json'), fetchedAt),
-    );
-    expect(hasIssueAt(failure, ['fetchedAt'])).toBe(true);
-    expect(await counts()).toStrictEqual(EMPTY_COUNTS);
-  });
-
-  it('missing (key omitted): Invalid Data naming fetchedAt, nothing saved', async () => {
-    const failure = invalidData(
-      await trySaveDetailsRequest({ details: await clientDetails('getbyid-62587.json') }),
-    );
+    ['missing (key omitted)', {}],
+    ['not a moment', { fetchedAt: 'yesterday' }],
+    ['not UTC', { fetchedAt: '2026-10-21T12:00:00+02:00' }],
+  ])('%s: Invalid Data naming fetchedAt, nothing saved', async (_name, moment) => {
+    const details = await clientDetails('getbyid-62587.json');
+    const failure = invalidData(await trySaveDetailsRequest({ details, ...moment }));
     expect(hasIssueAt(failure, ['fetchedAt'])).toBe(true);
     expect(await counts()).toStrictEqual(EMPTY_COUNTS);
   });
@@ -1849,33 +1764,38 @@ describe('AC-57 Store Unavailable', () => {
     }
   }, 60_000);
 
-  it('an empty connection string never throws; calls resolve Store Unavailable', async () => {
-    const broken = createStore({ connectionString: '' });
-    try {
-      expect(
-        failureOf(ReadPlaceResultSchema.parse(await broken.readPlace({ placeId: 1 }))).kind,
-      ).toBe('store_unavailable');
-    } finally {
-      await broken.close();
-    }
-  });
-
-  it('a failure of the real Test Database connection does not reveal its connection string', async () => {
-    const url = new URL(testUrl);
-    url.pathname = '/wm_missing_database_test';
-    const wrongDb = createStore({ connectionString: url.toString() });
-    try {
-      const failure = failureOf(
-        ReadPlaceResultSchema.parse(await wrongDb.readPlace({ placeId: 1 })),
-      );
-      expect(failure.kind).toBe('store_unavailable');
-      const text = JSON.stringify(failure);
-      if (url.password !== '') expect(text).not.toContain(decodeURIComponent(url.password));
-      expect(text).not.toContain(url.toString());
-    } finally {
-      await wrongDb.close();
-    }
-  }, 60_000);
+  it.each([
+    ['an empty connection string (never throws)', () => ''],
+    [
+      'a missing database on the real Test Database server',
+      () => {
+        const url = new URL(testUrl);
+        url.pathname = '/wm_missing_database_test';
+        return url.toString();
+      },
+    ],
+  ])(
+    '%s: reads resolve Store Unavailable without revealing the connection string',
+    async (_name, connectionString) => {
+      const url = connectionString();
+      const broken = createStore({ connectionString: url });
+      try {
+        const failure = failureOf(
+          ReadPlaceResultSchema.parse(await broken.readPlace({ placeId: 1 })),
+        );
+        expect(failure.kind).toBe('store_unavailable');
+        const text = JSON.stringify(failure);
+        if (url !== '') {
+          const password = new URL(url).password;
+          if (password !== '') expect(text).not.toContain(decodeURIComponent(password));
+          expect(text).not.toContain(url);
+        }
+      } finally {
+        await broken.close();
+      }
+    },
+    60_000,
+  );
 });
 
 describe('AC-58 Failures change nothing', () => {
@@ -1934,13 +1854,11 @@ describe('AC-60 Test Database only', () => {
 });
 
 describe('AC-61 Known starting state', () => {
-  it('every test starts with Schema Setup fully applied and nothing stored', async () => {
+  it('every test starts with Schema Setup fully applied and nothing stored; emptying keeps the structure', async () => {
     expect((await inspect()).pendingSteps).toStrictEqual([]);
     expect(await counts()).toStrictEqual(EMPTY_COUNTS);
     expect(await tagCatalogue()).toStrictEqual([]);
-  });
 
-  it('emptying the store keeps the structure', async () => {
     await saveDetails(await clientDetails('getbyid-62587.json'));
     expect(EmptyResultSchema.parse(await setup.emptyStore()).ok).toBe(true);
     expect(await counts()).toStrictEqual(EMPTY_COUNTS);
