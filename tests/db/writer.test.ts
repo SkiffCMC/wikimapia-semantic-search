@@ -4,8 +4,10 @@
  *
  * Pure: no database, no Knex, no Objection. Statements are fake `PromiseLike` values (resolved,
  * rejected or deferred promises).
+ * Extended by feature `embeddings` (AL4 embeddings 0.1 "Write-hook numbering", 1.3
+ * `createRunWideHook`; AL3 routing 20261023-embeddings-02-store, 2.1 B): `createRunWideHook`.
  */
-import { createWriter } from '../../src/db/writer';
+import { createRunWideHook, createWriter } from '../../src/db/writer';
 import type { Writer } from '../../src/db/types';
 import type { WriteHook } from '../../contracts/storage.schema';
 
@@ -164,5 +166,67 @@ describe('independent writers', () => {
     expect(callsB).toStrictEqual([1, 2]);
     expect(a.count).toBe(3);
     expect(b.count).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createRunWideHook (feature `embeddings`, AL3 routing 20261023-embeddings-02-store, 2.1 B)
+// ---------------------------------------------------------------------------
+
+describe('createRunWideHook', () => {
+  it('undefined in gives undefined out', () => {
+    expect(createRunWideHook(undefined)).toBeUndefined();
+  });
+
+  it('one run-wide hook shared by two writers sees 1, 2, 3 across both, in order', async () => {
+    const calls: number[] = [];
+    const hook = createRunWideHook((n) => {
+      calls.push(n);
+    });
+    const a = createWriter(hook);
+    const b = createWriter(hook);
+    await a.run(done());
+    expect(calls).toStrictEqual([1]);
+    await b.run(done());
+    expect(calls).toStrictEqual([1, 2]);
+    await a.run(done());
+    expect(calls).toStrictEqual([1, 2, 3]);
+    expect(a.count).toBe(2);
+    expect(b.count).toBe(1);
+  });
+
+  it('a throwing inner hook makes that run reject with its error', async () => {
+    const outage = new Error('simulated run-wide outage');
+    const hook = createRunWideHook((n) => {
+      if (n === 2) throw outage;
+    });
+    const a = createWriter(hook);
+    const b = createWriter(hook);
+    await expect(a.run(done())).resolves.toBeUndefined();
+    await expect(b.run(done())).rejects.toBe(outage);
+  });
+
+  it('a rejecting inner hook makes that run reject with its error', async () => {
+    const outage = new Error('simulated async run-wide outage');
+    const hook = createRunWideHook(() => Promise.reject(outage));
+    await expect(createWriter(hook).run(done())).rejects.toBe(outage);
+  });
+
+  it('two separate createRunWideHook calls number independently', async () => {
+    const callsA: number[] = [];
+    const callsB: number[] = [];
+    const hookA = createRunWideHook((n) => {
+      callsA.push(n);
+    });
+    const hookB = createRunWideHook((n) => {
+      callsB.push(n);
+    });
+    await createWriter(hookA).run(done());
+    await createWriter(hookB).run(done());
+    await createWriter(hookA).run(done());
+    await createWriter(hookA).run(done());
+    await createWriter(hookB).run(done());
+    expect(callsA).toStrictEqual([1, 2, 3]);
+    expect(callsB).toStrictEqual([1, 2]);
   });
 });

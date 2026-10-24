@@ -129,6 +129,7 @@ const NEW_EXPECTED_COLUMNS: readonly (readonly [string, readonly (readonly [stri
 const HYDRATION_TABLES: readonly string[] = ['crawl_runs', 'crawl_passes', 'crawl_finished_pages'];
 const NEW_TABLES: readonly string[] = [ITEM_FAILURES, EXPLICIT_RETRIES, PLACE_RELEASES];
 
+const CRAWL_STEP = '20261022_01_create_crawl_progress';
 const FAILURES_STEP = '20261022_02_create_item_failures';
 
 /**
@@ -482,9 +483,12 @@ describe('Crawl Progress structure', () => {
 });
 
 describe('Step 6 structure (AL4 crawl-run1-fixes 2.1 .. 2.4)', () => {
-  it('step 6 is the newest applied step and its three tables exist', async () => {
+  it('step 6 is applied directly after step 5 and its three tables exist', async () => {
     const structure = await inspectOk();
-    expect(structure.appliedSteps.at(-1)).toBe(FAILURES_STEP);
+    expect(structure.appliedSteps).toContain(FAILURES_STEP);
+    expect(structure.appliedSteps.indexOf(FAILURES_STEP)).toBe(
+      structure.appliedSteps.indexOf(CRAWL_STEP) + 1,
+    );
     expect(structure.pendingSteps).toStrictEqual([]);
     const names = structure.tables.map((t) => t.name);
     for (const table of NEW_TABLES) expect(names).toContain(table);

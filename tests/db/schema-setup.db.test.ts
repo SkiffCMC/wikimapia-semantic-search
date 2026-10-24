@@ -11,6 +11,10 @@
  * 20261022-crawl-run1-fixes-02-schema, section 2.1 A): the 6th step (Failure Records, Explicit
  * Retries, per-Place releases), `undoLast` of it, the `NOT VALID` status check after the undo,
  * and `emptyStore` clearing all ten tables.
+ * Extended by feature `embeddings` (AL4 embeddings U1, 2.1, 2.2, 1.4.9; AL3 routing
+ * 20261023-embeddings-01-schema, section 2.1 A): the 7th step (`place_embeddings`), so every
+ * `undoLast` sequence first undoes it, and storage AC-5 as replaced (the only `vector` column is
+ * `place_embeddings.embedding`).
  * Stand-in for contract ACs AC-1 .. AC-6, AC-14 (structure), AC-57 (Schema Setup part) and AC-61
  * until `contracts/storage.test.ts` can load (U8).
  *
@@ -54,12 +58,18 @@ const STEP_NAMES = [
   '20261021_04_create_comments',
   '20261022_01_create_crawl_progress',
   '20261022_02_create_item_failures',
+  '20261023_01_create_place_embeddings',
 ] as const;
 
 const CRAWL_STEP = '20261022_01_create_crawl_progress';
 const FAILURES_STEP = '20261022_02_create_item_failures';
+const EMBEDDINGS_STEP = '20261023_01_create_place_embeddings';
 const STORAGE_STEPS: readonly string[] = STEP_NAMES.slice(0, 4);
 const UP_TO_CRAWL_STEPS: readonly string[] = STEP_NAMES.slice(0, 5);
+const UP_TO_FAILURES_STEPS: readonly string[] = STEP_NAMES.slice(0, 6);
+
+/** The Embedding Record table of step 7 (AL4 embeddings 2.1). */
+const EMBEDDINGS_TABLE = 'place_embeddings';
 
 /** The three Crawl Progress tables of feature `hydration` (step 5). */
 const HYDRATION_TABLES: readonly string[] = [
@@ -141,11 +151,20 @@ const COMMENTS_COLUMNS: readonly (readonly [string, string])[] = [
   ['position', 'int4'],
 ];
 
+const PLACE_EMBEDDINGS_COLUMNS: readonly (readonly [string, string])[] = [
+  ['place_id', 'int8'],
+  ['embedding', 'vector'],
+  ['embedding_model', 'text'],
+  ['document_fingerprint', 'text'],
+  ['embedded_at', 'timestamptz'],
+];
+
 const EXPECTED_COLUMNS: readonly (readonly [string, readonly (readonly [string, string])[]])[] = [
   [STORE_TABLES.places, PLACES_COLUMNS],
   [STORE_TABLES.tags, TAGS_COLUMNS],
   [STORE_TABLES.placeTags, PLACE_TAGS_COLUMNS],
   [STORE_TABLES.comments, COMMENTS_COLUMNS],
+  [EMBEDDINGS_TABLE, PLACE_EMBEDDINGS_COLUMNS],
 ];
 
 // ---------------------------------------------------------------------------
@@ -395,7 +414,7 @@ describe('isTestDatabaseName', () => {
 // ---------------------------------------------------------------------------
 
 describe('MIGRATIONS', () => {
-  it('lists exactly the six steps, in order', () => {
+  it('lists exactly the seven steps, in order', () => {
     expect(MIGRATIONS.map((m) => m.name)).toStrictEqual([...STEP_NAMES]);
   });
 
@@ -416,7 +435,7 @@ describe('Setup from nothing (AC-1, AC-2)', () => {
     okSteps(await setup.apply());
   });
 
-  it('after undoAll, apply returns the six steps in order and inspect shows them applied', async () => {
+  it('after undoAll, apply returns the seven steps in order and inspect shows them applied', async () => {
     okSteps(await setup.undoAll());
     expect(okSteps(await setup.apply())).toStrictEqual([...STEP_NAMES]);
 
@@ -430,6 +449,7 @@ describe('Setup from nothing (AC-1, AC-2)', () => {
     const tables = tableNames(structure);
     for (const table of Object.values(STORE_TABLES)) expect(tables).toContain(table);
     for (const table of ALL_CRAWL_TABLES) expect(tables).toContain(table);
+    expect(tables).toContain(EMBEDDINGS_TABLE);
   }, 60_000);
 });
 
@@ -457,13 +477,13 @@ describe('Setup undone (AC-4)', () => {
     okSteps(await setup.apply());
   });
 
-  it('undoAll returns the six steps, newest first', async () => {
+  it('undoAll returns the seven steps, newest first', async () => {
     const undone = okSteps(await setup.undoAll());
     expect([...undone].sort()).toStrictEqual([...STEP_NAMES].sort());
     expect(undone).toStrictEqual([...STEP_NAMES].reverse());
   }, 60_000);
 
-  it('after undoAll nothing is applied, all six are pending, tables and extensions are gone', async () => {
+  it('after undoAll nothing is applied, all seven are pending, tables and extensions are gone', async () => {
     okSteps(await setup.undoAll());
 
     const after = await inspectOk();
@@ -472,6 +492,7 @@ describe('Setup undone (AC-4)', () => {
     const tables = tableNames(after);
     for (const table of Object.values(STORE_TABLES)) expect(tables).not.toContain(table);
     for (const table of ALL_CRAWL_TABLES) expect(tables).not.toContain(table);
+    expect(tables).not.toContain(EMBEDDINGS_TABLE);
     expect(after.enabledExtensions).not.toContain('vector');
     expect(after.enabledExtensions).not.toContain('postgis');
   }, 60_000);
@@ -481,7 +502,7 @@ describe('Setup undone (AC-4)', () => {
     expect(okSteps(await setup.undoAll())).toStrictEqual([]);
   }, 60_000);
 
-  it('re-applying after undoAll returns the same six steps', async () => {
+  it('re-applying after undoAll returns the same seven steps', async () => {
     okSteps(await setup.undoAll());
     expect(okSteps(await setup.apply())).toStrictEqual([...STEP_NAMES]);
     const reapplied = await inspectOk();
@@ -524,17 +545,22 @@ describe('Exact structure', () => {
 
 // ---------------------------------------------------------------------------
 // 7. Forbidden columns (AC-5, AC-6, AC-14); regexes copied from contracts/storage.test.ts
-//    (AC-5 as narrowed by AL5 for feature `hydration`: crawl tables are allowed)
+//    (AC-5 as narrowed by AL5 for feature `hydration`: crawl tables are allowed; replaced by AL5
+//    for feature `embeddings`: the only vector column is `place_embeddings.embedding`)
 // ---------------------------------------------------------------------------
 
 describe('Forbidden columns (AC-5, AC-6, AC-14)', () => {
-  it('AC-5: no vector or embedding table or column; vector is enabled', async () => {
+  it('AC-5: the only vector column is place_embeddings.embedding; no other embedding or vector name; vector is enabled', async () => {
     const structure = await inspectOk();
     expect(structure.enabledExtensions).toContain('vector');
+    const vectorColumns = structure.tables.flatMap((table) =>
+      table.columns.filter((c) => c.udtName === 'vector').map((c) => `${table.name}.${c.name}`),
+    );
+    expect(vectorColumns).toStrictEqual([`${EMBEDDINGS_TABLE}.embedding`]);
     for (const table of structure.tables) {
+      if (table.name === EMBEDDINGS_TABLE) continue;
       expect(table.name).not.toMatch(/embedding|vector/i);
       for (const column of table.columns) {
-        expect(column.udtName).not.toBe('vector');
         expect(column.name).not.toMatch(/embedding|vector/i);
       }
     }
@@ -661,11 +687,12 @@ describe('emptyStore without the tables (AC-61)', () => {
     expect(failure.kind).toBe('store_unavailable');
   }, 60_000);
 
-  it('after undoLast of step 6 (new tables absent) succeeds and clears the store and hydration tables', async () => {
+  it('after undoLast of step 7 and step 6 (new tables absent) succeeds and clears the store and hydration tables', async () => {
     expect(EmptyResultSchema.parse(await setup.emptyStore()).ok).toBe(true);
     const db = testDb();
     await seedStoreRows(db);
     await seedCrawlRows(db);
+    expect(okSteps(await setup.undoLast())).toStrictEqual([EMBEDDINGS_STEP]);
     expect(okSteps(await setup.undoLast())).toStrictEqual([FAILURES_STEP]);
     const tables = tableNames(await inspectOk());
     for (const table of FAILURE_TABLES) expect(tables).not.toContain(table);
@@ -677,14 +704,16 @@ describe('emptyStore without the tables (AC-61)', () => {
     for (const table of HYDRATION_TABLES) expect(await rowCount(db, table)).toBe(0);
   }, 60_000);
 
-  it('after two undoLast (all crawl tables absent) succeeds and still clears the store tables', async () => {
+  it('after three undoLast (embedding and all crawl tables absent) succeeds and still clears the store tables', async () => {
     expect(EmptyResultSchema.parse(await setup.emptyStore()).ok).toBe(true);
     const db = testDb();
     await TagModel.query(db).insert({ tag_id: 194, title: 'synthetic tag' });
+    expect(okSteps(await setup.undoLast())).toStrictEqual([EMBEDDINGS_STEP]);
     expect(okSteps(await setup.undoLast())).toStrictEqual([FAILURES_STEP]);
     expect(okSteps(await setup.undoLast())).toStrictEqual([CRAWL_STEP]);
     const tables = tableNames(await inspectOk());
     for (const table of ALL_CRAWL_TABLES) expect(tables).not.toContain(table);
+    expect(tables).not.toContain(EMBEDDINGS_TABLE);
 
     expect(EmptyResultSchema.parse(await setup.emptyStore())).toStrictEqual({ ok: true, value: {} });
     expect(await TagModel.query(db).resultSize()).toBe(0);
@@ -701,7 +730,7 @@ describe('undoLast', () => {
     EmptyResultSchema.parse(await setup.emptyStore());
   });
 
-  it('undoes exactly step 6 and leaves the hydration and store tables and their rows unchanged', async () => {
+  it('undoes exactly step 7, then step 6, and leaves the hydration and store tables and their rows unchanged', async () => {
     expect(EmptyResultSchema.parse(await setup.emptyStore()).ok).toBe(true);
     const db = testDb();
     await TagModel.query(db).insert({ tag_id: 194, title: 'synthetic tag' });
@@ -714,11 +743,18 @@ describe('undoLast', () => {
     const runBefore = await readRun(db, runId);
     expect(runBefore).toHaveLength(1);
 
+    expect(okSteps(await setup.undoLast())).toStrictEqual([EMBEDDINGS_STEP]);
+    const afterFirst = await inspectOk();
+    expect(afterFirst.appliedSteps).toStrictEqual([...UP_TO_FAILURES_STEPS]);
+    expect(afterFirst.pendingSteps).toStrictEqual([EMBEDDINGS_STEP]);
+    expect(tableNames(afterFirst)).not.toContain(EMBEDDINGS_TABLE);
+    for (const table of FAILURE_TABLES) expect(tableNames(afterFirst)).toContain(table);
+
     expect(okSteps(await setup.undoLast())).toStrictEqual([FAILURES_STEP]);
 
     const after = await inspectOk();
     expect(after.appliedSteps).toStrictEqual([...UP_TO_CRAWL_STEPS]);
-    expect(after.pendingSteps).toStrictEqual([FAILURES_STEP]);
+    expect(after.pendingSteps).toStrictEqual([FAILURES_STEP, EMBEDDINGS_STEP]);
     const tables = tableNames(after);
     for (const table of FAILURE_TABLES) expect(tables).not.toContain(table);
     for (const table of HYDRATION_TABLES) expect(tables).toContain(table);
@@ -732,12 +768,14 @@ describe('undoLast', () => {
     expect(await readRun(db, runId)).toStrictEqual(runBefore);
   }, 60_000);
 
-  it('a second undoLast undoes the Crawl Progress step, a third the comments step; apply re-applies all three', async () => {
+  it('after the embeddings and failures steps, a third undoLast undoes the Crawl Progress step, a fourth the comments step; apply re-applies all four', async () => {
+    expect(okSteps(await setup.undoLast())).toStrictEqual([EMBEDDINGS_STEP]);
     expect(okSteps(await setup.undoLast())).toStrictEqual([FAILURES_STEP]);
     expect(okSteps(await setup.undoLast())).toStrictEqual([CRAWL_STEP]);
     const afterSecond = await inspectOk();
     expect(afterSecond.appliedSteps).toStrictEqual([...STORAGE_STEPS]);
-    expect(afterSecond.pendingSteps).toStrictEqual([CRAWL_STEP, FAILURES_STEP]);
+    expect(afterSecond.pendingSteps).toStrictEqual([CRAWL_STEP, FAILURES_STEP, EMBEDDINGS_STEP]);
+    expect(tableNames(afterSecond)).not.toContain(EMBEDDINGS_TABLE);
     for (const table of ALL_CRAWL_TABLES) expect(tableNames(afterSecond)).not.toContain(table);
     for (const table of Object.values(STORE_TABLES)) expect(tableNames(afterSecond)).toContain(table);
 
@@ -749,6 +787,7 @@ describe('undoLast', () => {
       '20261021_04_create_comments',
       CRAWL_STEP,
       FAILURES_STEP,
+      EMBEDDINGS_STEP,
     ]);
     expect(tableNames(after)).not.toContain(STORE_TABLES.comments);
 
@@ -756,10 +795,12 @@ describe('undoLast', () => {
       '20261021_04_create_comments',
       CRAWL_STEP,
       FAILURES_STEP,
+      EMBEDDINGS_STEP,
     ]);
     const reapplied = await inspectOk();
     expect(reapplied.pendingSteps).toStrictEqual([]);
     for (const table of ALL_CRAWL_TABLES) expect(tableNames(reapplied)).toContain(table);
+    expect(tableNames(reapplied)).toContain(EMBEDDINGS_TABLE);
   }, 60_000);
 
   it('an existing quota_exhausted Run Record does not make the undo of step 6 fail and stays readable', async () => {
@@ -769,6 +810,7 @@ describe('undoLast', () => {
     const before = await readRun(db, runId);
     expect(before).toHaveLength(1);
 
+    expect(okSteps(await setup.undoLast())).toStrictEqual([EMBEDDINGS_STEP]);
     expect(okSteps(await setup.undoLast())).toStrictEqual([FAILURES_STEP]);
     expect(await readRun(db, runId)).toStrictEqual(before);
 
@@ -777,7 +819,7 @@ describe('undoLast', () => {
       insertRun(db, { ...QUOTA_EXHAUSTED_RUN, region_name: 'test-region-c' }),
     ).rejects.toMatchObject({ code: CHECK_VIOLATION, constraint: 'crawl_runs_status_valid' });
 
-    expect(okSteps(await setup.apply())).toStrictEqual([FAILURES_STEP]);
+    expect(okSteps(await setup.apply())).toStrictEqual([FAILURES_STEP, EMBEDDINGS_STEP]);
     expect(await readRun(db, runId)).toStrictEqual(before);
     expect(await rowCount(db, CRAWL_TABLES.runs)).toBe(1);
   }, 60_000);

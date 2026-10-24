@@ -10,10 +10,16 @@
  * Extended by feature `crawl-run1-fixes` (AL4 crawl-run1-fixes 1.3, 1.4.8; AL3 routing
  * 20261022-crawl-run1-fixes-03-failure-records, 2.1 D): `validateFailureRecord`,
  * `validateFailureRecordsInput` and `validateExplicitRetriesInput` (section 9).
+ * Extended by feature `embeddings` (AL4 embeddings 1.3, 1.4.8; AL3 routing
+ * 20261023-embeddings-02-store, 2.1 C): `validateEmbeddingCandidatesInput` and
+ * `validateSaveEmbeddingRecordsInput` (section 10). Vectors come only from `fakeEmbedding` /
+ * `fakeVector` (contract AC-59).
  */
 import {
   validateCrawlProgressInput,
   validateDetailsInput,
+  validateEmbeddingCandidatesInput,
+  validateSaveEmbeddingRecordsInput,
   validateExplicitRetriesInput,
   validateFailureRecord,
   validateFailureRecordsInput,
@@ -52,6 +58,14 @@ import {
   FailureRecordsInputSchema,
   type FailureRecord,
 } from '../../contracts/crawl-run1-fixes.schema';
+import {
+  EMBEDDING_MODEL,
+  EmbeddingCandidatesInputSchema,
+  SaveEmbeddingRecordsInputSchema,
+  documentFingerprint,
+  type EmbeddingRecord,
+} from '../../contracts/embeddings.schema';
+import { fakeEmbedding, fakeVector } from '../../contracts/embeddings.support';
 
 type AnyResult = { ok: true; value: unknown } | { ok: false; failure: StoreFailure };
 type Path = (string | number)[];
@@ -806,5 +820,211 @@ describe('validateExplicitRetriesInput', () => {
 
   it.each(NOT_OBJECTS)('%s is invalid_data and does not throw', (_label, input) => {
     invalidOf(expectNoThrow(validateExplicitRetriesInput, input));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. validateEmbeddingCandidatesInput / validateSaveEmbeddingRecordsInput
+//     (feature `embeddings`; AL4 embeddings 1.3, 1.4.8; AL3 routing
+//     20261023-embeddings-02-store, section 2.1 C; contract AC-39, R2)
+// ---------------------------------------------------------------------------
+
+/** A valid Embedding Record of `placeId` (fake Embedding, fingerprint of a synthetic text). */
+function embeddingRecord(placeId: number, seed = `place ${String(placeId)}`): EmbeddingRecord {
+  return {
+    placeId,
+    embedding: fakeEmbedding(seed),
+    model: EMBEDDING_MODEL,
+    documentFingerprint: documentFingerprint(seed),
+    embeddedAt: FETCHED_AT,
+  };
+}
+
+function startsWith(path: readonly (string | number)[], prefix: readonly (string | number)[]): boolean {
+  return prefix.every((item, i) => path[i] === item);
+}
+
+/** Fails the test unless some issue path starts with `prefix`. */
+function expectIssueUnder(failure: { issues: StoreIssue[] }, prefix: Path): void {
+  const paths = failure.issues.map((i) => i.path);
+  expect(
+    paths.some((p) => startsWith(p, prefix)),
+    `no issue under ${JSON.stringify(prefix)}; got ${JSON.stringify(paths)}`,
+  ).toBe(true);
+}
+
+describe('validateEmbeddingCandidatesInput', () => {
+  it.each([
+    ['{ limit: 1 }', { limit: 1 }],
+    ['{ limit: 1000 }', { limit: 1000 }],
+    ['{ afterPlaceId: 1, limit: 5 }', { afterPlaceId: 1, limit: 5 }],
+  ])('%s is ok with a value equal to the parsed input', (_label, input) => {
+    expect(validateEmbeddingCandidatesInput(input)).toStrictEqual({
+      ok: true,
+      value: EmbeddingCandidatesInputSchema.parse(input),
+    });
+  });
+
+  it('without afterPlaceId the value has no afterPlaceId key', () => {
+    const result = validateEmbeddingCandidatesInput({ limit: 3 });
+    if (!result.ok) throw new Error('expected ok');
+    expect(Object.hasOwn(result.value, 'afterPlaceId')).toBe(false);
+  });
+
+  it('the value is a fresh object', () => {
+    const input = { afterPlaceId: 7, limit: 5 };
+    const result = validateEmbeddingCandidatesInput(input);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.value).not.toBe(input);
+  });
+
+  it.each([
+    ['limit 0', { limit: 0 }, ['limit']],
+    ['limit 1001', { limit: 1001 }, ['limit']],
+    ['limit 1.5', { limit: 1.5 }, ['limit']],
+    ['a missing limit', {}, ['limit']],
+    ['afterPlaceId -1', { afterPlaceId: -1, limit: 1 }, ['afterPlaceId']],
+    ['afterPlaceId 0', { afterPlaceId: 0, limit: 1 }, ['afterPlaceId']],
+  ] as const)('%s is invalid_data with the issue path', (_label, input, path) => {
+    issueAt(invalidOf(expectNoThrow(validateEmbeddingCandidatesInput, input)), [...path]);
+  });
+
+  it('an extra key is invalid_data and does not echo its value', () => {
+    const failure = invalidOf(
+      expectNoThrow(validateEmbeddingCandidatesInput, { limit: 1, extra: SECRET_EXTRA }),
+    );
+    expect(JSON.stringify(failure)).not.toContain(SECRET_EXTRA);
+  });
+
+  it.each(NOT_OBJECTS)('%s is invalid_data and does not throw', (_label, input) => {
+    const failure = invalidOf(expectNoThrow(validateEmbeddingCandidatesInput, input));
+    expect(JSON.stringify(failure)).not.toContain('synthetic-string-input');
+  });
+});
+
+describe('validateSaveEmbeddingRecordsInput', () => {
+  it('one valid record is ok with a value equal to the parsed input', () => {
+    const input = { records: [embeddingRecord(62587)] };
+    expect(validateSaveEmbeddingRecordsInput(input)).toStrictEqual({
+      ok: true,
+      value: SaveEmbeddingRecordsInputSchema.parse(input),
+    });
+  });
+
+  it('two valid records for different Places are ok, in input order', () => {
+    const input = { records: [embeddingRecord(62587), embeddingRecord(300)] };
+    const result = validateSaveEmbeddingRecordsInput(input);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.value.records.map((r) => r.placeId)).toStrictEqual([62587, 300]);
+    expect(result.value).not.toBe(input);
+  });
+
+  /** AC-39 bad records: [label, change to a valid record, field named at path index 2]. */
+  const bad: [string, (r: EmbeddingRecord) => unknown, string][] = [
+    ['1023 numbers', (r) => ({ ...r, embedding: fakeVector(1023) }), 'embedding'],
+    ['1025 numbers', (r) => ({ ...r, embedding: fakeVector(1025) }), 'embedding'],
+    ['1536 numbers', (r) => ({ ...r, embedding: fakeVector(1536) }), 'embedding'],
+    ['a NaN value', (r) => ({ ...r, embedding: [...fakeVector(1023), Number.NaN] }), 'embedding'],
+    [
+      'an infinite value',
+      (r) => ({ ...r, embedding: [...fakeVector(1023), Number.NEGATIVE_INFINITY] }),
+      'embedding',
+    ],
+    ['an empty Embedding Model', (r) => ({ ...r, model: '' }), 'model'],
+    ['no Document Fingerprint', (r) => omitKeys(r, 'documentFingerprint'), 'documentFingerprint'],
+    [
+      'an empty Document Fingerprint',
+      (r) => ({ ...r, documentFingerprint: '' }),
+      'documentFingerprint',
+    ],
+  ];
+
+  it.each(bad)(
+    '%s at index 0 is invalid_data with an issue under records[0]',
+    (_label, change, field) => {
+      const input = { records: [change(embeddingRecord(62587))] };
+      const failure = invalidOf(expectNoThrow(validateSaveEmbeddingRecordsInput, input));
+      expectIssueUnder(failure, ['records', 0, field]);
+    },
+  );
+
+  it.each(bad)(
+    '%s at index 1 of 2 is invalid_data with an issue under records[1] only',
+    (_label, change, field) => {
+      const input = { records: [embeddingRecord(300), change(embeddingRecord(62587))] };
+      const failure = invalidOf(expectNoThrow(validateSaveEmbeddingRecordsInput, input));
+      expectIssueUnder(failure, ['records', 1, field]);
+      for (const issue of failure.issues) expect(startsWith(issue.path, ['records', 0])).toBe(false);
+    },
+  );
+
+  it('a missing placeId is reported under records[i].placeId', () => {
+    const input = { records: [embeddingRecord(300), omitKeys(embeddingRecord(62587), 'placeId')] };
+    const failure = invalidOf(expectNoThrow(validateSaveEmbeddingRecordsInput, input));
+    expectIssueUnder(failure, ['records', 1, 'placeId']);
+  });
+
+  it('a sub-second embeddedAt is reported under records[i].embeddedAt', () => {
+    const input = {
+      records: [{ ...embeddingRecord(62587), embeddedAt: '2026-10-21T10:00:00.500Z' }],
+    };
+    const failure = invalidOf(expectNoThrow(validateSaveEmbeddingRecordsInput, input));
+    expectIssueUnder(failure, ['records', 0, 'embeddedAt']);
+  });
+
+  it('an empty records array is invalid_data at records', () => {
+    const failure = invalidOf(expectNoThrow(validateSaveEmbeddingRecordsInput, { records: [] }));
+    issueAt(failure, ['records']);
+  });
+
+  it('1001 records are invalid_data at records', () => {
+    const records = Array.from({ length: 1001 }, (_, i) => embeddingRecord(i + 1, 'same text'));
+    const failure = invalidOf(expectNoThrow(validateSaveEmbeddingRecordsInput, { records }));
+    issueAt(failure, ['records']);
+  });
+
+  it('1000 records for distinct Places are ok', () => {
+    const records = Array.from({ length: 1000 }, (_, i) => embeddingRecord(i + 1, 'same text'));
+    expect(validateSaveEmbeddingRecordsInput({ records }).ok).toBe(true);
+  });
+
+  it('a duplicated Place ID is invalid_data at records', () => {
+    const input = { records: [embeddingRecord(62587, 'a'), embeddingRecord(62587, 'b')] };
+    const failure = invalidOf(expectNoThrow(validateSaveEmbeddingRecordsInput, input));
+    issueAt(failure, ['records']);
+  });
+
+  it('an extra key on a record is invalid_data under that record', () => {
+    const input = { records: [{ ...embeddingRecord(62587), extra: SECRET_EXTRA }] };
+    const failure = invalidOf(expectNoThrow(validateSaveEmbeddingRecordsInput, input));
+    expectIssueUnder(failure, ['records', 0]);
+  });
+
+  it('a missing records key is invalid_data at records', () => {
+    issueAt(invalidOf(expectNoThrow(validateSaveEmbeddingRecordsInput, {})), ['records']);
+  });
+
+  it('the failures never contain the input values', () => {
+    const inputs: unknown[] = [
+      { records: [{ ...embeddingRecord(62587), documentFingerprint: 'NOT-HEX-synthetic-print' }] },
+      { records: [{ ...embeddingRecord(62587), embeddedAt: 'synthetic-moment-text' }] },
+      { records: [{ ...embeddingRecord(62587), model: 987654321 }] },
+      { records: [{ ...embeddingRecord(62587), extra: SECRET_EXTRA }] },
+      { records: [embeddingRecord(62587)], extra: SECRET_EXTRA },
+    ];
+    for (const input of inputs) {
+      const text = JSON.stringify(
+        invalidOf(expectNoThrow(validateSaveEmbeddingRecordsInput, input)),
+      );
+      expect(text).not.toContain('NOT-HEX-synthetic-print');
+      expect(text).not.toContain('synthetic-moment-text');
+      expect(text).not.toContain('987654321');
+      expect(text).not.toContain(SECRET_EXTRA);
+    }
+  });
+
+  it.each(NOT_OBJECTS)('%s is invalid_data and does not throw', (_label, input) => {
+    const failure = invalidOf(expectNoThrow(validateSaveEmbeddingRecordsInput, input));
+    expect(JSON.stringify(failure)).not.toContain('synthetic-string-input');
   });
 });
