@@ -1,610 +1,93 @@
 /**
- * AL2 unit tests: `src/crawl/requests.ts` (AL4 1.3 `Requested<T>`, `ClientCall<T>`,
- * `requestWithBackoff`; 1.4.4 One Client call with back-off and classification; section 3;
- * AL6 AC-17, AC-18, AC-43, AC-44, AC-46, AC-48; U5).
- *
- * The real Wikimapia Client runs over a real Gateway (`createGateway`) that wraps the contract
- * doubles `SimulatedCrawlClock` and `CrawlWikimapia`; a few classification cases use a
- * hand-written `ClientCall`. The heartbeat is a fake that always succeeds. No database, no
- * network, no real time. Answers are synthetic or recorded fixtures; the API key is `TEST_API_KEY`.
+ * AL2 unit tests: `src/crawl/requests.ts` (AL4 1.4.4; crawl-run1-fixes AL4 1.4.3). Only the
+ * classification branches the contract tests do not reach: stops from Key Quota and
+ * Configuration failures, an abort during the Connection Failure back-off, and the Wikimapia Error message
+ * rules. Hand-written `ClientCall`s over a real Gateway; no network, no real time.
  */
 import { createGateway } from '../../src/crawl/gateway';
 import { requestWithBackoff } from '../../src/crawl/requests';
-import type { ClientCall, HeartbeatOutcome } from '../../src/crawl/types';
-import { createWikimapiaClient } from '../../src/wikimapia/client';
-import {
-  CONNECTION_RETRY_WAITS_SECONDS,
-  DEFAULT_MIN_REQUEST_INTERVAL_SECONDS,
-  DEFAULT_REQUEST_BUDGET,
-} from '../../contracts/hydration.schema';
-import {
-  DEFAULT_RETRY_LIMIT,
-  type ClientFailure,
-  type TransportResponse,
-} from '../../contracts/wikimapia-client.schema';
-import { keyQuotaAnswer, keyQuotaVariant } from '../../contracts/wikimapia-client.support';
-import {
-  CrawlWikimapia,
-  RUN_START,
-  SECOND,
-  SMALL_BBOX,
-  SimulatedCrawlClock,
-  T1_TILES,
-  TEST_API_KEY,
-  UNREACHABLE,
-  at,
-  detailsAnswer,
-  listingAnswer,
-  rateLimitAnswer,
-  rateLimitForever,
-  scripted,
-  syntheticBoxPlace,
-  unexpectedAnswer,
-  wikimapiaErrorAnswer,
-  type SimulatedAnswer,
-  type Script,
-} from '../../contracts/hydration.support';
+import type { ClientCall } from '../../src/crawl/types';
+import type { ClientFailure } from '../../contracts/wikimapia-client.schema';
+import { SimulatedCrawlClock } from '../../contracts/hydration.support';
 
-// ---------------------------------------------------------------------------
-// Harness
-// ---------------------------------------------------------------------------
-
-interface HarnessOptions {
-  script?: Omit<Script, 'tiles'>;
-  minRequestIntervalSeconds?: number;
-  requestBudget?: number;
-  signal?: AbortSignal;
-  onSleep?: (atMs: number, ms: number) => void | Promise<void>;
-  apiKey?: string;
-}
-
-function harness(options: HarnessOptions = {}) {
-  const clock = new SimulatedCrawlClock(
-    RUN_START,
-    options.onSleep === undefined ? {} : { onSleep: options.onSleep },
-  );
-  const wikimapia = new CrawlWikimapia(clock, scripted({ tiles: T1_TILES, ...options.script }));
-  const heartbeats: number[] = [];
+function setup(signal?: AbortSignal, onSleep?: () => void) {
+  const clock = new SimulatedCrawlClock(undefined, onSleep === undefined ? {} : { onSleep });
   const gateway = createGateway({
-    transport: wikimapia.transport,
+    transport: () => Promise.reject(new Error('not used')),
     clock,
-    signal: options.signal,
-    minRequestIntervalSeconds:
-      options.minRequestIntervalSeconds ?? DEFAULT_MIN_REQUEST_INTERVAL_SECONDS,
-    requestBudget: options.requestBudget ?? DEFAULT_REQUEST_BUDGET,
-    heartbeat: () => {
-      heartbeats.push(clock.nowMilliseconds);
-      return Promise.resolve<HeartbeatOutcome>({ ok: true });
-    },
+    signal,
+    minRequestIntervalSeconds: 0,
+    requestBudget: 10,
+    heartbeat: () => Promise.resolve({ ok: true }),
     lastRenewalMs: clock.nowMilliseconds,
   });
-  const client = createWikimapiaClient({
-    apiKey: options.apiKey ?? TEST_API_KEY,
-    transport: gateway.transport,
-    clock: gateway.clock,
-  });
-  return { clock, wikimapia, gateway, client, heartbeats };
+  return { clock, gateway };
 }
 
-function pageAnswer(page: number): TransportResponse {
-  return listingAnswer([syntheticBoxPlace(9000 + page, 20.457, 44.817)], page, 100, 300);
+function failingCall(failure: ClientFailure): ClientCall<string> & { calls: number } {
+  const call = Object.assign(
+    () => {
+      call.calls += 1;
+      return Promise.resolve({ ok: false as const, failure });
+    },
+    { calls: 0 },
+  );
+  return call;
 }
 
-/** Answers every request with `answers` (the last repeats) for Tile 1 page 1. */
-function page1(...answers: SimulatedAnswer[]): Omit<Script, 'tiles'> {
-  return { listing: { 1: [answers.length === 1 ? at(answers, 0) : answers] } };
-}
-
-/** The Client's own failure for one answer, without Gateway or crawl (for message comparison). */
-async function directFailure(
-  answerWith: SimulatedAnswer,
-  input: { pageSize?: number } = {},
-  apiKey: string = TEST_API_KEY,
-): Promise<ClientFailure> {
-  const clock = new SimulatedCrawlClock();
-  const wikimapia = new CrawlWikimapia(clock, () => answerWith);
-  const client = createWikimapiaClient({ apiKey, transport: wikimapia.transport, clock });
-  const result = await client.listPlaces({ bbox: SMALL_BBOX, page: 1, ...input });
-  if (result.ok) throw new Error('expected the Client to fail');
-  return result.failure;
-}
-
-// ---------------------------------------------------------------------------
-// Connection Failures and back-off (AC-17)
-// ---------------------------------------------------------------------------
-
-describe('requestWithBackoff: Connection Failures', () => {
-  it('always unreachable: 3 calls, 30 s then 60 s apart, then an Item Failure connection', async () => {
-    const { client, gateway, wikimapia, clock } = harness({
-      minRequestIntervalSeconds: 0,
-      script: page1(UNREACHABLE),
+describe('requestWithBackoff', () => {
+  it.each<[string, ClientFailure, object]>([
+    [
+      'key_quota_exhausted',
+      { kind: 'key_quota_exhausted', message: 'quota', wikimapiaMessage: 'Key limit', code: 1004 },
+      { reason: 'quota_exhausted', message: 'quota', wikimapiaMessage: 'Key limit' },
+    ],
+    [
+      'configuration',
+      { kind: 'configuration', message: 'no key' },
+      { reason: 'failed', message: 'no key' },
+    ],
+  ])('a %s failure stops the Gateway after 1 call', async (_kind, failure, stop) => {
+    const { gateway, clock } = setup();
+    const call = failingCall(failure);
+    expect(await requestWithBackoff(gateway, 'details', undefined, call)).toStrictEqual({
+      kind: 'stopped',
     });
-    const result = await requestWithBackoff(gateway, 'listing', undefined, () =>
-      client.listPlaces({ bbox: SMALL_BBOX, page: 1 }),
-    );
-    expect(wikimapia.calls).toHaveLength(1 + CONNECTION_RETRY_WAITS_SECONDS.length);
-    expect(wikimapia.calls).toHaveLength(3);
-    expect(at(wikimapia.startTimes, 1) - at(wikimapia.startTimes, 0)).toBe(30 * SECOND);
-    expect(at(wikimapia.startTimes, 2) - at(wikimapia.startTimes, 1)).toBe(60 * SECOND);
-    expect(clock.sleeps.map((s) => s.ms)).toStrictEqual([30 * SECOND, 60 * SECOND]);
-
-    const direct = await directFailure(UNREACHABLE);
-    expect(result).toStrictEqual({
-      kind: 'item_failure',
-      failureKind: 'connection',
-      message: direct.message,
-    });
-    if (result.kind !== 'item_failure') throw new Error('expected an Item Failure');
-    expect(result.message).not.toContain('key=');
-    expect(result.message).not.toContain(TEST_API_KEY);
-    expect(result.message).not.toContain('ECONNREFUSED while requesting');
-    expect(gateway.counts().rateLimitWaits).toBe(0);
-    expect(gateway.counts().rateLimitWaitMs).toBe(0);
-    expect(gateway.stopped).toBeUndefined();
-  });
-
-  it('unreachable once, then answered: 2 calls and ok', async () => {
-    const { client, gateway, wikimapia } = harness({
-      minRequestIntervalSeconds: 0,
-      script: page1(UNREACHABLE, pageAnswer(1)),
-    });
-    const result = await requestWithBackoff(gateway, 'listing', undefined, () =>
-      client.listPlaces({ bbox: SMALL_BBOX, page: 1 }),
-    );
-    expect(wikimapia.calls).toHaveLength(2);
-    expect(result.kind).toBe('ok');
-    if (result.kind !== 'ok') throw new Error('expected ok');
-    expect(result.value.places.map((p) => p.placeId)).toStrictEqual([9001]);
-    expect(gateway.stopped).toBeUndefined();
-  });
-
-  it('an aborted signal on a Connection Failure stops interrupted without backing off', async () => {
-    const { gateway, clock } = harness();
-    const controller = new AbortController();
-    controller.abort();
-    let calls = 0;
-    const call: ClientCall<string> = () => {
-      calls += 1;
-      return Promise.resolve({ ok: false, failure: { kind: 'connection', message: 'gone' } });
-    };
-    const result = await requestWithBackoff(gateway, 'listing', controller.signal, call);
-    expect(result).toStrictEqual({ kind: 'stopped' });
-    expect(calls).toBe(1);
+    expect(gateway.stopped).toStrictEqual(stop);
+    expect(call.calls).toBe(1);
     expect(clock.sleeps).toStrictEqual([]);
-    expect(gateway.stopped?.reason).toBe('interrupted');
   });
 
-  it('an abort during the 30 s back-off: stopped, interrupted, no further call', async () => {
+  it('an abort during the Connection Failure back-off stops interrupted without another call', async () => {
     const controller = new AbortController();
-    const { client, gateway, wikimapia, clock } = harness({
-      minRequestIntervalSeconds: 0,
-      signal: controller.signal,
-      onSleep: () => {
-        controller.abort();
-      },
-      script: page1(UNREACHABLE),
+    const { gateway, clock } = setup(controller.signal, () => {
+      controller.abort();
     });
-    const result = await requestWithBackoff(gateway, 'listing', controller.signal, () =>
-      client.listPlaces({ bbox: SMALL_BBOX, page: 1 }),
-    );
-    expect(result).toStrictEqual({ kind: 'stopped' });
-    expect(gateway.stopped?.reason).toBe('interrupted');
-    expect(wikimapia.calls).toHaveLength(1);
-    expect(clock.sleeps).toHaveLength(1);
-    expect(at(clock.sleeps, 0).ms).toBe(30 * SECOND);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Failures that are not retried (AC-18)
-// ---------------------------------------------------------------------------
-
-describe('requestWithBackoff: failures without retry', () => {
-  for (const [kind, answerFor] of [
-    ['wikimapia_error', wikimapiaErrorAnswer],
-    ['unexpected_response', unexpectedAnswer],
-  ] as const) {
-    it(`a ${kind} makes 1 call and is an Item Failure ${kind} with the Client's message`, async () => {
-      const { client, gateway, wikimapia } = harness({ script: page1(answerFor()) });
-      const result = await requestWithBackoff(gateway, 'listing', undefined, () =>
-        client.listPlaces({ bbox: SMALL_BBOX, page: 1 }),
-      );
-      expect(wikimapia.calls).toHaveLength(1);
-      const direct = await directFailure(answerFor());
-      // crawl-run1-fixes AL4 0.1 "Item Failure messages", 1.4.3: a Wikimapia Error's message
-      // carries Wikimapia's (Client-redacted) text; other kinds keep the bare Client message.
-      const expected =
-        direct.kind === 'wikimapia_error'
-          ? `${direct.message}: ${direct.wikimapiaMessage}`
-          : direct.message;
-      expect(result).toStrictEqual({ kind: 'item_failure', failureKind: kind, message: expected });
-      if (kind === 'wikimapia_error') {
-        expect(expected).toBe('Wikimapia reported an error: Invalid API key.');
-      }
-      expect(gateway.stopped).toBeUndefined();
+    const call = failingCall({ kind: 'connection', message: 'gone' });
+    expect(await requestWithBackoff(gateway, 'listing', controller.signal, call)).toStrictEqual({
+      kind: 'stopped',
     });
-  }
-
-  it('an invalid request makes no call and is an Item Failure invalid_request', async () => {
-    const { client, gateway, wikimapia } = harness();
-    const result = await requestWithBackoff(gateway, 'listing', undefined, () =>
-      client.listPlaces({ bbox: SMALL_BBOX, page: 1, pageSize: 0 }),
-    );
-    expect(wikimapia.calls).toHaveLength(0);
-    const direct = await directFailure(pageAnswer(1), { pageSize: 0 });
-    expect(result).toStrictEqual({
-      kind: 'item_failure',
-      failureKind: 'invalid_request',
-      message: direct.message,
-    });
-    expect(gateway.stopped).toBeUndefined();
+    expect(gateway.stopped).toStrictEqual({ reason: 'interrupted' });
+    expect(call.calls).toBe(1);
+    expect(clock.sleeps.map((s) => s.ms)).toStrictEqual([30_000]);
   });
 
-  it("a wikimapia_error message is the Client message plus wikimapiaMessage; issues never appear", async () => {
-    const { gateway } = harness();
-    const call: ClientCall<string> = () =>
-      Promise.resolve({
-        ok: false,
-        failure: {
-          kind: 'wikimapia_error',
-          message: 'Wikimapia answered with an error',
-          wikimapiaMessage: 'RAW-WIKIMAPIA-TEXT',
-        },
-      });
-    const result = await requestWithBackoff(gateway, 'listing', undefined, call);
-    expect(result).toStrictEqual({
+  it.each([
+    ['', 'Wikimapia reported an error'],
+    [' \n\t ', 'Wikimapia reported an error'],
+    ['Bad\n\tkey  here ', 'Wikimapia reported an error: Bad key here'],
+  ])('a Wikimapia Error with text %j is an Item Failure %j', async (text, message) => {
+    const { gateway } = setup();
+    const call = failingCall({
+      kind: 'wikimapia_error',
+      message: 'Wikimapia reported an error',
+      wikimapiaMessage: text,
+    });
+    expect(await requestWithBackoff(gateway, 'listing', undefined, call)).toStrictEqual({
       kind: 'item_failure',
       failureKind: 'wikimapia_error',
-      message: 'Wikimapia answered with an error: RAW-WIKIMAPIA-TEXT',
-    });
-
-    const unexpected: ClientCall<string> = () =>
-      Promise.resolve({
-        ok: false,
-        failure: {
-          kind: 'unexpected_response',
-          message: 'Unexpected Wikimapia response',
-          issues: [{ path: ['RAW-ISSUE-PATH'], message: 'RAW-ISSUE' }],
-        },
-      });
-    const second = await requestWithBackoff(gateway, 'listing', undefined, unexpected);
-    expect(second).toStrictEqual({
-      kind: 'item_failure',
-      failureKind: 'unexpected_response',
-      message: 'Unexpected Wikimapia response',
-    });
-    expect(JSON.stringify(second)).not.toContain('RAW-ISSUE');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Wikimapia Error item messages (crawl-run1-fixes AL4 1.4.3; AC-22, AC-27)
-// ---------------------------------------------------------------------------
-
-function wikimapiaErrorCall(message: string, wikimapiaMessage: string): ClientCall<string> {
-  return () =>
-    Promise.resolve({ ok: false, failure: { kind: 'wikimapia_error', message, wikimapiaMessage } });
-}
-
-describe('requestWithBackoff: Wikimapia Error message rules', () => {
-  it('a multi-line, tab-separated wikimapiaMessage becomes one trimmed line with single spaces', async () => {
-    const { gateway } = harness();
-    const result = await requestWithBackoff(
-      gateway,
-      'details',
-      undefined,
-      wikimapiaErrorCall('Wikimapia reported an error', '  line one\n\tline two  \r\n  three\t '),
-    );
-    expect(result).toStrictEqual({
-      kind: 'item_failure',
-      failureKind: 'wikimapia_error',
-      message: 'Wikimapia reported an error: line one line two three',
+      message,
     });
     expect(gateway.stopped).toBeUndefined();
-  });
-
-  for (const blank of ['', '   ', ' \t\n\r\n ']) {
-    it(`a blank wikimapiaMessage (${JSON.stringify(blank)}) gives exactly the bare Client message`, async () => {
-      const { gateway } = harness();
-      const result = await requestWithBackoff(
-        gateway,
-        'details',
-        undefined,
-        wikimapiaErrorCall('Wikimapia reported an error', blank),
-      );
-      expect(result).toStrictEqual({
-        kind: 'item_failure',
-        failureKind: 'wikimapia_error',
-        message: 'Wikimapia reported an error',
-      });
-      expect(gateway.stopped).toBeUndefined();
-    });
-  }
-
-  it('a Client-redacted text is copied as is', async () => {
-    const { gateway } = harness();
-    const result = await requestWithBackoff(
-      gateway,
-      'details',
-      undefined,
-      wikimapiaErrorCall('Wikimapia reported an error', 'Key [key removed] is not valid'),
-    );
-    expect(result).toStrictEqual({
-      kind: 'item_failure',
-      failureKind: 'wikimapia_error',
-      message: 'Wikimapia reported an error: Key [key removed] is not valid',
-    });
-    expect(gateway.stopped).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Key Quota Exhausted (crawl-run1-fixes AL4 1.4.3; AC-15 .. AC-20)
-// ---------------------------------------------------------------------------
-
-describe('requestWithBackoff: Key Quota Exhausted', () => {
-  it('listing: 1 call, no sleep, stopped quota_exhausted with the Client message and Wikimapia text', async () => {
-    const { client, gateway, wikimapia, clock } = harness({
-      minRequestIntervalSeconds: 0,
-      script: page1(keyQuotaAnswer(), pageAnswer(1)),
-    });
-    const result = await requestWithBackoff(gateway, 'listing', undefined, () =>
-      client.listPlaces({ bbox: SMALL_BBOX, page: 1 }),
-    );
-    expect(result).toStrictEqual({ kind: 'stopped' });
-    expect(wikimapia.calls).toHaveLength(1);
-    expect(clock.sleeps).toStrictEqual([]);
-    const direct = await directFailure(keyQuotaAnswer());
-    expect(direct.kind).toBe('key_quota_exhausted');
-    expect(gateway.stopped).toStrictEqual({
-      reason: 'quota_exhausted',
-      message: direct.message,
-      wikimapiaMessage: 'Key limit has been reached',
-    });
-    expect(gateway.stopped?.message).toContain('Key limit has been reached');
-    expect(gateway.stopped?.message).not.toContain(TEST_API_KEY);
-    expect(JSON.stringify(gateway.stopped)).not.toContain(TEST_API_KEY);
-    expect(gateway.counts().listingRequests).toBe(1);
-    expect(gateway.counts().rateLimitWaits).toBe(0);
-  });
-
-  it('details: 1 call, no sleep, stopped quota_exhausted, counted as a details request', async () => {
-    const { client, gateway, wikimapia, clock } = harness({
-      minRequestIntervalSeconds: 0,
-      script: { details: { 62587: [keyQuotaAnswer(), detailsAnswer('getbyid-62587.json')] } },
-    });
-    const result = await requestWithBackoff(gateway, 'details', undefined, () =>
-      client.getPlaceDetails({ placeId: 62587 }),
-    );
-    expect(result).toStrictEqual({ kind: 'stopped' });
-    expect(wikimapia.calls).toHaveLength(1);
-    expect(clock.sleeps).toStrictEqual([]);
-    const direct = await directFailure(keyQuotaAnswer());
-    expect(gateway.stopped).toStrictEqual({
-      reason: 'quota_exhausted',
-      message: direct.message,
-      wikimapiaMessage: 'Key limit has been reached',
-    });
-    expect(gateway.counts().detailsRequests).toBe(1);
-    expect(gateway.counts().listingRequests).toBe(0);
-  });
-
-  it('a Key Quota answer to the second Connection Failure try: 2 calls, one 30 s wait, no third call (AC-20)', async () => {
-    const { client, gateway, wikimapia, clock } = harness({
-      minRequestIntervalSeconds: 0,
-      script: page1(UNREACHABLE, keyQuotaAnswer(), pageAnswer(1)),
-    });
-    const result = await requestWithBackoff(gateway, 'listing', undefined, () =>
-      client.listPlaces({ bbox: SMALL_BBOX, page: 1 }),
-    );
-    expect(result).toStrictEqual({ kind: 'stopped' });
-    expect(wikimapia.calls).toHaveLength(2);
-    expect(clock.sleeps.map((s) => s.ms)).toStrictEqual([30 * SECOND]);
-    expect(at(wikimapia.startTimes, 1) - at(wikimapia.startTimes, 0)).toBe(30 * SECOND);
-    expect(gateway.stopped?.reason).toBe('quota_exhausted');
-    expect(gateway.stopped?.wikimapiaMessage).toBe('Key limit has been reached');
-  });
-
-  it("a Key Quota answer after a Rate-Limit Response (the Client's own retry): 2 calls in the kind", async () => {
-    const { client, gateway, wikimapia } = harness({
-      minRequestIntervalSeconds: 0,
-      script: {
-        details: { 62587: [rateLimitAnswer(1), keyQuotaAnswer(), detailsAnswer('getbyid-62587.json')] },
-      },
-    });
-    const result = await requestWithBackoff(gateway, 'details', undefined, () =>
-      client.getPlaceDetails({ placeId: 62587 }),
-    );
-    expect(result).toStrictEqual({ kind: 'stopped' });
-    expect(wikimapia.calls).toHaveLength(2);
-    expect(gateway.counts().detailsRequests).toBe(2);
-    expect(gateway.counts().listingRequests).toBe(0);
-    expect(gateway.requestsSent).toBe(2);
-    expect(gateway.stopped?.reason).toBe('quota_exhausted');
-    expect(gateway.stopped?.wikimapiaMessage).toBe('Key limit has been reached');
-  });
-
-  it('an already stopped Gateway that receives a Key Quota failure keeps the first stop', async () => {
-    const { gateway } = harness();
-    gateway.stop('budget_reached', 'Request Budget of 3 used up.');
-    const call: ClientCall<string> = () =>
-      Promise.resolve({
-        ok: false,
-        failure: {
-          kind: 'key_quota_exhausted',
-          message: 'Wikimapia key quota exhausted (code 1004): Key limit has been reached',
-          wikimapiaMessage: 'Key limit has been reached',
-          code: 1004,
-        },
-      });
-    const result = await requestWithBackoff(gateway, 'listing', undefined, call);
-    expect(result).toStrictEqual({ kind: 'stopped' });
-    expect(gateway.stopped).toStrictEqual({
-      reason: 'budget_reached',
-      message: 'Request Budget of 3 used up.',
-    });
-  });
-
-  it("a blank recorded wikimapiaMessage still stops quota_exhausted with '' and the bare Client message", async () => {
-    const blank = keyQuotaVariant({ message: '' });
-    const { client, gateway, wikimapia } = harness({ script: page1(blank) });
-    const result = await requestWithBackoff(gateway, 'listing', undefined, () =>
-      client.listPlaces({ bbox: SMALL_BBOX, page: 1 }),
-    );
-    expect(result).toStrictEqual({ kind: 'stopped' });
-    expect(wikimapia.calls).toHaveLength(1);
-    const direct = await directFailure(keyQuotaVariant({ message: '' }));
-    expect(direct.kind).toBe('key_quota_exhausted');
-    expect(gateway.stopped).toStrictEqual({
-      reason: 'quota_exhausted',
-      message: direct.message,
-      wikimapiaMessage: '',
-    });
-  });
-
-  it("a literal Key Quota failure with an empty wikimapiaMessage stops with '' kept", async () => {
-    const { gateway, clock } = harness();
-    let calls = 0;
-    const call: ClientCall<string> = () => {
-      calls += 1;
-      return Promise.resolve({
-        ok: false,
-        failure: {
-          kind: 'key_quota_exhausted',
-          message: 'Wikimapia key quota exhausted (code 1004)',
-          wikimapiaMessage: '',
-          code: 1004,
-        },
-      });
-    };
-    const result = await requestWithBackoff(gateway, 'listing', undefined, call);
-    expect(result).toStrictEqual({ kind: 'stopped' });
-    expect(calls).toBe(1);
-    expect(clock.sleeps).toStrictEqual([]);
-    expect(gateway.stopped).toStrictEqual({
-      reason: 'quota_exhausted',
-      message: 'Wikimapia key quota exhausted (code 1004)',
-      wikimapiaMessage: '',
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Stops (AC-43, AC-44, AC-48)
-// ---------------------------------------------------------------------------
-
-describe('requestWithBackoff: stops', () => {
-  it('Rate Limit Exhausted: Retry Limit + 1 calls, stopped, the Gateway rate_limited', async () => {
-    const { client, gateway, wikimapia } = harness({ script: page1(rateLimitForever()) });
-    const result = await requestWithBackoff(gateway, 'listing', undefined, () =>
-      client.listPlaces({ bbox: SMALL_BBOX, page: 1 }),
-    );
-    expect(wikimapia.calls).toHaveLength(DEFAULT_RETRY_LIMIT + 1);
-    expect(result).toStrictEqual({ kind: 'stopped' });
-    expect(gateway.stopped).toStrictEqual({
-      reason: 'rate_limited',
-      message: `Wikimapia kept answering with its rate limit after ${String(DEFAULT_RETRY_LIMIT + 1)} attempts.`,
-    });
-  });
-
-  it('a Configuration Failure: no call, stopped, the Gateway failed with the Client message', async () => {
-    const { client, gateway, wikimapia } = harness({ apiKey: ' \t ' });
-    const result = await requestWithBackoff(gateway, 'listing', undefined, () =>
-      client.listPlaces({ bbox: SMALL_BBOX, page: 1 }),
-    );
-    expect(wikimapia.calls).toHaveLength(0);
-    expect(result).toStrictEqual({ kind: 'stopped' });
-    const direct = await directFailure(pageAnswer(1), {}, ' \t ');
-    expect(direct.kind).toBe('configuration');
-    expect(gateway.stopped).toStrictEqual({ reason: 'failed', message: direct.message });
-  });
-
-  it('the budget running out inside a Client retry: stopped, not an Item Failure', async () => {
-    const { client, gateway, wikimapia } = harness({
-      requestBudget: 1,
-      script: page1(rateLimitAnswer(1), pageAnswer(1)),
-    });
-    const result = await requestWithBackoff(gateway, 'listing', undefined, () =>
-      client.listPlaces({ bbox: SMALL_BBOX, page: 1 }),
-    );
-    expect(result).toStrictEqual({ kind: 'stopped' });
-    expect(wikimapia.calls).toHaveLength(1);
-    expect(gateway.stopped?.reason).toBe('budget_reached');
-  });
-
-  it('an already stopped Gateway: stopped, the transport is never reached, the first stop kept', async () => {
-    const { client, gateway, wikimapia } = harness();
-    gateway.stop('failed', 'stopped earlier');
-    const result = await requestWithBackoff(gateway, 'listing', undefined, () =>
-      client.listPlaces({ bbox: SMALL_BBOX, page: 1 }),
-    );
-    expect(result).toStrictEqual({ kind: 'stopped' });
-    expect(wikimapia.calls).toHaveLength(0);
-    expect(gateway.stopped).toStrictEqual({ reason: 'failed', message: 'stopped earlier' });
-  });
-
-  it('checks the Gateway stop before the result: an ok result of a stopped Gateway is stopped', async () => {
-    const { gateway } = harness();
-    const call: ClientCall<string> = () => {
-      gateway.stop('failed', 'stopped during the call');
-      return Promise.resolve({ ok: true, value: 'value' });
-    };
-    const result = await requestWithBackoff(gateway, 'listing', undefined, call);
-    expect(result).toStrictEqual({ kind: 'stopped' });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// ok, interrupt and kinds (AC-46)
-// ---------------------------------------------------------------------------
-
-describe('requestWithBackoff: ok and kinds', () => {
-  it('an answer that arrives after an abort is still ok', async () => {
-    const controller = new AbortController();
-    const { client, gateway, wikimapia } = harness({
-      signal: controller.signal,
-      script: page1({
-        effect: () => {
-          controller.abort();
-        },
-        then: pageAnswer(1),
-      }),
-    });
-    const result = await requestWithBackoff(gateway, 'listing', controller.signal, () =>
-      client.listPlaces({ bbox: SMALL_BBOX, page: 1 }),
-    );
-    expect(result.kind).toBe('ok');
-    expect(wikimapia.calls).toHaveLength(1);
-  });
-
-  it("counts a 'details' call and its retries as detailsRequests", async () => {
-    const { client, gateway, wikimapia } = harness({
-      minRequestIntervalSeconds: 0,
-      script: {
-        details: {
-          62587: [UNREACHABLE, rateLimitAnswer(0), detailsAnswer('getbyid-62587.json')],
-        },
-      },
-    });
-    const result = await requestWithBackoff(gateway, 'details', undefined, () =>
-      client.getPlaceDetails({ placeId: 62587 }),
-    );
-    expect(result.kind).toBe('ok');
-    if (result.kind !== 'ok') throw new Error('expected ok');
-    expect(result.value.placeId).toBe(62587);
-    expect(wikimapia.calls).toHaveLength(3);
-    expect(gateway.counts().detailsRequests).toBe(3);
-    expect(gateway.counts().listingRequests).toBe(0);
-    expect(gateway.requestsSent).toBe(3);
-  });
-
-  it('sets the kind before the call', async () => {
-    const { client, gateway } = harness({ minRequestIntervalSeconds: 0 });
-    gateway.setKind('details');
-    await requestWithBackoff(gateway, 'listing', undefined, () =>
-      client.listPlaces({ bbox: SMALL_BBOX, page: 1 }),
-    );
-    expect(gateway.counts().listingRequests).toBe(1);
-    expect(gateway.counts().detailsRequests).toBe(0);
   });
 });
