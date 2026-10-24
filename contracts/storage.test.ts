@@ -18,6 +18,7 @@
  */
 import { createPlaceStore } from '../src/db/place-store';
 import { createSchemaSetup } from '../src/db/schema-setup';
+import { EMBEDDING_COLUMN, EMBEDDING_TABLE } from './embeddings.schema';
 import {
   DATABASE_URL_ENV,
   EmptyResultSchema,
@@ -383,15 +384,23 @@ describe('AC-4 Setup undone', () => {
 });
 
 // Narrowed by feature `hydration` (AL6 20261022-hydration-al6.md AC-55, R2, gap G3, approved by
-// the stakeholder): Crawl Progress storage is now allowed; embeddings and vectors still are not.
-describe('AC-5 No embeddings or vectors of any kind', () => {
-  it('has no vector or embedding table or column; Vector Support is enabled', async () => {
+// the stakeholder): Crawl Progress storage is now allowed. Replaced by feature `embeddings` (AL6
+// 20261023-embeddings-al6.md AC-57, R1, approved by the stakeholder): "the only place for vectors
+// is the Embedding Record of a Place, 1024 numbers each". The 1024 dimensions are read through the
+// Embedding Store and checked in ./embeddings.test.ts (AC-53, AC-57), so this file keeps importing
+// only the Place Store and Schema Setup.
+describe('AC-5 Vectors only in the Embedding Record of a Place', () => {
+  it('the only vector column is the Embedding column; no other embedding or vector storage; Vector Support is enabled', async () => {
     const structure = await inspect();
     expect(structure.enabledExtensions).toContain('vector');
+    const vectorColumns = structure.tables.flatMap((table) =>
+      table.columns.filter((c) => c.udtName === 'vector').map((c) => `${table.name}.${c.name}`),
+    );
+    expect(vectorColumns).toStrictEqual([`${EMBEDDING_TABLE}.${EMBEDDING_COLUMN}`]);
     for (const table of structure.tables) {
+      if (table.name === EMBEDDING_TABLE) continue;
       expect(table.name).not.toMatch(/embedding|vector/i);
       for (const column of table.columns) {
-        expect(column.udtName).not.toBe('vector');
         expect(column.name).not.toMatch(/embedding|vector/i);
       }
     }

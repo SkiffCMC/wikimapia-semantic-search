@@ -1531,7 +1531,7 @@ describe('AC-41 Schema Setup for Failure Records', () => {
     okValue(SchemaStepsResultSchema.parse(await setup.apply()));
   });
 
-  it('the newest step holds `crawl_item_failures` with its columns and no Wikimapia content', async () => {
+  it('the step holds `crawl_item_failures` with its columns and no Wikimapia content', async () => {
     const structure = await inspect();
     expect(structure.pendingSteps).toStrictEqual([]);
     const table = structure.tables.find((t) => t.name === CRAWL_ITEM_FAILURES_TABLE);
@@ -1563,8 +1563,18 @@ describe('AC-41 Schema Setup for Failure Records', () => {
     const applied = structure.appliedSteps;
     const tableNames = structure.tables.map((t) => t.name);
 
-    const undone = okValue(SchemaStepsResultSchema.parse(await setup.undoLast())).steps;
-    expect(undone).toStrictEqual([at(applied, applied.length - 1)]);
+    // Amended by feature `embeddings` (AL6 20261023-embeddings-al6.md R1, AC-58): its Schema
+    // Setup step is newer, so this step is reached by undoing newest-first, one step at a time,
+    // until `crawl_item_failures` is gone (as Hydration AC-56 already does).
+    const undone: string[] = [];
+    while (
+      (await inspect()).tables.some((t) => t.name === CRAWL_ITEM_FAILURES_TABLE) &&
+      undone.length < applied.length
+    ) {
+      const steps = okValue(SchemaStepsResultSchema.parse(await setup.undoLast())).steps;
+      expect(steps).toStrictEqual([at(applied, applied.length - 1 - undone.length)]);
+      undone.push(...steps);
+    }
     const after = await inspect();
     const afterNames = after.tables.map((t) => t.name);
     expect(afterNames).not.toContain(CRAWL_ITEM_FAILURES_TABLE);
@@ -1582,7 +1592,9 @@ describe('AC-41 Schema Setup for Failure Records', () => {
       place: before.place,
     });
 
-    expect(okValue(SchemaStepsResultSchema.parse(await setup.apply())).steps).toStrictEqual(undone);
+    expect(okValue(SchemaStepsResultSchema.parse(await setup.apply())).steps).toStrictEqual(
+      [...undone].reverse(),
+    );
     expect({
       counts: await counts(),
       place: await read(62587),
