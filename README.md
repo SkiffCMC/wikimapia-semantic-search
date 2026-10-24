@@ -14,7 +14,7 @@ Includes a web UI, a hybrid spatial/vector search engine (PostGIS + pgvector), a
 * **Frontend:** Next.js, Tailwind CSS, Leaflet.js
 * **Backend:** Node.js (TypeScript) / Python (FastAPI)
 * **Database:** PostgreSQL 16 + PostGIS + pgvector
-* **AI & Protocol:** OpenAI API / Local Embeddings, Model Context Protocol (MCP)
+* **AI & Protocol:** Claude Haiku (intent parsing), Voyage AI embeddings, Model Context Protocol (MCP)
 
 ---
 
