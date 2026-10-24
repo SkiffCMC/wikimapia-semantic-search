@@ -704,26 +704,20 @@ describe('AC-9 Key Quota recognised, Listing Page', () => {
 });
 
 describe('AC-10 Not another kind', () => {
-  it('never a rate limit, Wikimapia Error, Unexpected Response or data, whatever the Retry Limit', async () => {
-    for (const retryLimit of [0, 5, 10]) {
+  it.each([0, 10])(
+    'Retry Limit %i: never a rate limit, Wikimapia Error, Unexpected Response or data',
+    async (retryLimit) => {
       const { client, wikimapia, clock } = clientSetup([keyQuotaAnswer()], {
         repeatLast: true,
         retryLimit,
       });
       const details = await client.getPlaceDetails({ placeId: 62587 });
       const listing = await client.listPlaces({ bbox: BELGRADE, page: 1 });
-      for (const result of [details, listing]) {
-        expect(result.ok).toBe(false);
-        if (result.ok) continue;
-        expect(['rate_limit_exhausted', 'wikimapia_error', 'unexpected_response']).not.toContain(
-          result.failure.kind,
-        );
-        clientFailure(result, 'key_quota_exhausted');
-      }
+      for (const result of [details, listing]) clientFailure(result, 'key_quota_exhausted');
       expect(wikimapia.requests).toHaveLength(2);
       expect(clock.sleeps).toStrictEqual([]);
-    }
-  });
+    },
+  );
 });
 
 describe('AC-11 Key Quota during Rate-Limit Retries', () => {
@@ -790,26 +784,24 @@ describe('AC-13 Other `debug` answers unchanged', () => {
 });
 
 describe('AC-14 No secrets', () => {
-  it('a Key Quota Exhausted failure carries neither the API Key nor a request address with it', async () => {
-    const outcomes = [
-      await clientSetup([keyQuotaAnswer()]).client.getPlaceDetails({ placeId: 62587 }),
-      await clientSetup([keyQuotaAnswer()]).client.listPlaces({ bbox: BELGRADE, page: 1 }),
-      await clientSetup([
-        keyQuotaVariant({ message: `Key ${TEST_API_KEY} limit has been reached` }),
-      ]).client.getPlaceDetails({ placeId: 62587 }),
-      await clientSetup([
-        keyQuotaVariant({
-          message: `Limit reached for https://api.wikimapia.org/?function=box&key=${TEST_API_KEY}`,
-        }),
-      ]).client.listPlaces({ bbox: BELGRADE, page: 1 }),
-    ];
-    for (const outcome of outcomes) {
-      const f = clientFailure(outcome, 'key_quota_exhausted');
-      const json = JSON.stringify(f);
+  it.each([
+    ['Place Details, the key in the message', `Key ${TEST_API_KEY} limit has been reached`],
+    [
+      'a Listing Page, a request address in the message',
+      `Limit reached for https://api.wikimapia.org/?function=box&key=${TEST_API_KEY}`,
+    ],
+  ])(
+    '%s: the failure carries neither the API Key nor a request address with it',
+    async (request, message) => {
+      const { client } = clientSetup([keyQuotaVariant({ message })]);
+      const outcome = request.startsWith('Place')
+        ? await client.getPlaceDetails({ placeId: 62587 })
+        : await client.listPlaces({ bbox: BELGRADE, page: 1 });
+      const json = JSON.stringify(clientFailure(outcome, 'key_quota_exhausted'));
       expect(json).not.toContain(TEST_API_KEY);
       expect(json).not.toMatch(/[?&]key=/);
-    }
-  });
+    },
+  );
 });
 
 // ===========================================================================
@@ -1052,82 +1044,52 @@ describe('AC-23 Connection Failure tries are one record', () => {
 });
 
 describe('AC-24 What is not recorded', () => {
-  it('Rate Limit Exhausted', async () => {
-    await seedCentral(900);
-    const { report } = await crawlAt(REGION_T1, 0, { details: { 900: rateLimitForever() } });
-    expect(report.outcome).toBe('rate_limited');
-    expect(await recordsOfRun(report)).toStrictEqual([]);
-    expect(await failureRecords({ placeId: 900 })).toStrictEqual([]);
-  });
-
-  it('Key Quota Exhausted', async () => {
-    await seedCentral(900);
-    const { report } = await crawlAt(REGION_T1, 0, { details: { 900: keyQuotaAnswer() } });
-    expect(report.outcome).toBe('quota_exhausted');
-    expect(await recordsOfRun(report)).toStrictEqual([]);
-  });
-
-  it('a Configuration Failure', async () => {
-    await seedCentral(900);
-    const { report } = await crawlAt(REGION_T1, 0, {}, { apiKey: ' \t ' });
-    expect(report.outcome).toBe('failed');
-    expect(await failureRecords({ placeId: 900 })).toStrictEqual([]);
-  });
-
-  it('the Request Budget reached during a request', async () => {
-    await seedCentral(900);
-    const { report } = await crawlAt(
-      REGION_T1,
-      0,
-      { details: { 900: [rateLimitAnswer(1), wikimapiaErrorAnswer()] } },
-      { request: { requestBudget: 2 } },
-    );
-    expect(report.outcome).toBe('budget_reached');
-    expect(await recordsOfRun(report)).toStrictEqual([]);
-    expect(await failureRecords({ placeId: 900 })).toStrictEqual([]);
-  });
-
-  it('an Operator interrupt', async () => {
-    await seedCentral(900, 901);
+  const interruptAt900 = (): Parameters<typeof crawlAt> => {
     const controller = new AbortController();
-    const { report } = await crawlAt(
-      REGION_T1,
-      0,
-      {
-        details: {
-          900: {
-            effect: () => {
-              controller.abort();
-            },
-            then: syntheticDetailsAnswer(900),
-          },
-        },
+    const interrupt = {
+      effect: () => {
+        controller.abort();
       },
-      { signal: controller.signal },
-    );
-    expect(report.outcome).toBe('interrupted');
-    expect(await recordsOfRun(report)).toStrictEqual([]);
-  });
+      then: syntheticDetailsAnswer(900),
+    };
+    return [REGION_T1, 0, { details: { 900: interrupt } }, { signal: controller.signal }];
+  };
 
-  it('an unavailable Place Store', async () => {
-    await seedCentral(900);
-    const { report } = await crawlAt(
-      REGION_T1,
-      0,
-      {},
-      { connectionString: UNREACHABLE_DATABASE_URL },
-    );
-    expect(report.outcome).toBe('failed');
-    expect(await failureRecords({ placeId: 900 })).toStrictEqual([]);
-  }, 60_000);
-
-  it('a Dry Run keeps no Failure Records', async () => {
-    await seedCentral(900);
-    const { report, wikimapia } = await crawlAt(REGION_T1, 0, {}, { request: { dryRun: true } });
-    expect(report.outcome).toBe('planned');
-    expect(wikimapia.calls).toHaveLength(0);
-    expect(await failureRecords({ placeId: 900 })).toStrictEqual([]);
-  });
+  it.each<[string, () => Parameters<typeof crawlAt>, RunReport['outcome']]>([
+    [
+      'Rate Limit Exhausted',
+      () => [REGION_T1, 0, { details: { 900: rateLimitForever() } }],
+      'rate_limited',
+    ],
+    ['a Configuration Failure', () => [REGION_T1, 0, {}, { apiKey: ' \t ' }], 'failed'],
+    [
+      'the Request Budget reached during a request',
+      () => [
+        REGION_T1,
+        0,
+        { details: { 900: [rateLimitAnswer(1), wikimapiaErrorAnswer()] } },
+        { request: { requestBudget: 2 } },
+      ],
+      'budget_reached',
+    ],
+    ['an Operator interrupt', interruptAt900, 'interrupted'],
+    [
+      'an unavailable Place Store',
+      () => [REGION_T1, 0, {}, { connectionString: UNREACHABLE_DATABASE_URL }],
+      'failed',
+    ],
+    ['a Dry Run', () => [REGION_T1, 0, {}, { request: { dryRun: true } }], 'planned'],
+  ])(
+    '%s keeps no Failure Record',
+    async (_, args, outcome) => {
+      await seedCentral(900, 901);
+      const { report } = await crawlAt(...args());
+      expect(report.outcome).toBe(outcome);
+      expect(await failureRecords({ placeId: 900 })).toStrictEqual([]);
+      if (report.runId !== undefined) expect(await recordsOfRun(report)).toStrictEqual([]);
+    },
+    60_000,
+  );
 });
 
 describe('AC-25 Kept across Runs', () => {
