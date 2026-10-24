@@ -49,6 +49,7 @@ import type {
   Validated,
 } from './types';
 import { validateDetailsInput, validatePlacesDueInput } from './validate';
+import { createRunWideHook } from './writer';
 
 const NOT_CONFIGURED_MESSAGE =
   'Place Store is not configured: connection string is missing or unusable';
@@ -136,16 +137,6 @@ function totalsOf(db: Knex, value: PlacesDueInput): Promise<RegionTotals> {
   }, READ_TRANSACTION_CONFIG);
 }
 
-/** One counter for the whole Run: the caller's hook sees 1, 2, 3, ... across every step. */
-function runWideHook(onWrite: WriteHook | undefined): WriteHook | undefined {
-  if (onWrite === undefined) return undefined;
-  let n = 0;
-  return async () => {
-    n += 1;
-    await onWrite(n);
-  };
-}
-
 function buildRepository(db: Knex | undefined, hook: WriteHook | undefined): CrawlRepository {
   return {
     beginRun: (input: BeginRunInput): Promise<StoreResult<BeginRunValue>> =>
@@ -217,7 +208,7 @@ function buildRepository(db: Knex | undefined, hook: WriteHook | undefined): Cra
 
 export function openCrawlRepository(options: CrawlRepositoryOptions): CrawlRepository {
   try {
-    return buildRepository(openDb(options), runWideHook(options.onWrite));
+    return buildRepository(openDb(options), createRunWideHook(options.onWrite));
   } catch {
     return buildRepository(undefined, undefined);
   }

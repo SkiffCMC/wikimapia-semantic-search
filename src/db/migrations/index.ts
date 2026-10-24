@@ -10,6 +10,7 @@ import * as createTags from './20261021_03_create_tags';
 import * as createComments from './20261021_04_create_comments';
 import * as createCrawlProgress from './20261022_01_create_crawl_progress';
 import * as createItemFailures from './20261022_02_create_item_failures';
+import * as createPlaceEmbeddings from './20261023_01_create_place_embeddings';
 
 export const MIGRATION_TABLE = 'knex_migrations';
 
@@ -27,6 +28,11 @@ export const MIGRATIONS: readonly NamedMigration[] = [
     name: '20261022_02_create_item_failures',
     up: createItemFailures.up,
     down: createItemFailures.down,
+  },
+  {
+    name: '20261023_01_create_place_embeddings',
+    up: createPlaceEmbeddings.up,
+    down: createPlaceEmbeddings.down,
   },
 ];
 

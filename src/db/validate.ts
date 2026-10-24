@@ -32,6 +32,12 @@ import {
   type FailureRecord,
   type FailureRecordsInput,
 } from '../../contracts/crawl-run1-fixes.schema';
+import {
+  EmbeddingCandidatesInputSchema,
+  SaveEmbeddingRecordsInputSchema,
+  type EmbeddingCandidatesInput,
+  type SaveEmbeddingRecordsInput,
+} from '../../contracts/embeddings.schema';
 import { toFailureIssues } from '../wikimapia/issues';
 import { invalidData } from './failures';
 import type { Validated } from './types';
@@ -140,5 +146,26 @@ export function validateExplicitRetriesInput(input: unknown): Validated<Explicit
     ExplicitRetriesInputSchema,
     input,
     'input does not have the shape of an Explicit Retries query',
+  );
+}
+
+export function validateEmbeddingCandidatesInput(
+  input: unknown,
+): Validated<EmbeddingCandidatesInput> {
+  return plain(
+    EmbeddingCandidatesInputSchema,
+    input,
+    'input does not have the shape of an Embedding Candidates query',
+  );
+}
+
+/** Issue paths keep the record index: `['records', i, ...]` (AC-39). */
+export function validateSaveEmbeddingRecordsInput(
+  input: unknown,
+): Validated<SaveEmbeddingRecordsInput> {
+  return plain(
+    SaveEmbeddingRecordsInputSchema,
+    input,
+    'input does not have the shape of an Embedding Records save',
   );
 }

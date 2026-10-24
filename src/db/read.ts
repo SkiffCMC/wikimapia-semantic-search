@@ -48,6 +48,7 @@ import type {
 const PlaceRowsSchema = z.array(PlaceRowSchema);
 const CommentRowsSchema = z.array(CommentRowSchema);
 const TagRowsSchema = z.array(TagRowSchema);
+const TagLinkRowsSchema = z.array(TagLinkRowSchema);
 const TagLinkRawSchema = z.object({ rows: z.array(TagLinkRowSchema) });
 const ShapeRawSchema = z.object({ rows: z.array(ShapeRowSchema) });
 const RingRawSchema = z.object({ rows: z.array(RingPointRowSchema) });
@@ -56,7 +57,7 @@ const PlaceTagLinksSchema = z.array(PlaceTagLinkSchema);
 const StoredCommentKeysSchema = z.array(StoredCommentKeySchema);
 
 /** Every `places` column except `centre_point` and `outline_shape`. */
-const PLACE_COLUMNS = [
+export const PLACE_COLUMNS = [
   'place_id',
   'name',
   'wikimapia_url',
@@ -81,7 +82,7 @@ const PLACE_COLUMNS = [
   'address_country',
 ];
 
-const FETCHED_AT_TEXT_SQL =
+export const FETCHED_AT_TEXT_SQL =
   'to_char(details_fetched_at at time zone \'UTC\', \'YYYY-MM-DD"T"HH24:MI:SS"Z"\') as details_fetched_at_text';
 
 const TAG_LINKS_OF_PLACE_SQL =
@@ -153,6 +154,36 @@ async function selectTagLinksOfPlace(
 ): Promise<TagLinkRow[]> {
   const result: unknown = await db.raw(TAG_LINKS_OF_PLACE_SQL, [placeId]);
   return TagLinkRawSchema.parse(result).rows;
+}
+
+/** Tag links of several Places (AL4 embeddings 1.4.8), ordered by Place then Tag ID. */
+export async function selectTagLinksOfPlaces(
+  db: Knex | Knex.Transaction,
+  placeIds: readonly number[],
+): Promise<TagLinkRow[]> {
+  if (placeIds.length === 0) return [];
+  // The select of `TAG_LINKS_OF_PLACE_SQL`, with the ids as `whereIn` bindings.
+  const result: unknown = await db
+    .select('pt.place_id', 'pt.tag_id', 'pt.presence', 'pt.position', 't.title')
+    .from({ pt: STORE_TABLES.placeTags })
+    .join({ t: STORE_TABLES.tags }, 't.tag_id', 'pt.tag_id')
+    .whereIn('pt.place_id', [...placeIds])
+    .orderBy([{ column: 'pt.place_id' }, { column: 'pt.tag_id' }]);
+  return TagLinkRowsSchema.parse(result);
+}
+
+/** Comment rows of several Places (AL4 embeddings 1.4.8), ordered by Place then `num`. */
+export async function selectCommentRowsOfPlaces(
+  db: Knex | Knex.Transaction,
+  placeIds: readonly number[],
+): Promise<CommentRow[]> {
+  if (placeIds.length === 0) return [];
+  const result: unknown = await db
+    .select('*')
+    .from(STORE_TABLES.comments)
+    .whereIn('place_id', [...placeIds])
+    .orderBy([{ column: 'place_id' }, { column: 'num' }]);
+  return CommentRowsSchema.parse(result);
 }
 
 function geometryTypeName(type: string): string {

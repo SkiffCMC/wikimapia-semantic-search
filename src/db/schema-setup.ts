@@ -33,7 +33,10 @@ const TableExistsResultSchema = z.object({
   rows: z.tuple([z.object({ present: z.boolean() })]),
 });
 
+const EMBEDDINGS_TABLE = 'place_embeddings';
 const TRUNCATE_STORE_TABLES = 'TRUNCATE TABLE place_tags, comments, tags, places';
+const TRUNCATE_STORE_AND_EMBEDDING_TABLES =
+  'TRUNCATE TABLE place_embeddings, place_tags, comments, tags, places';
 const TRUNCATE_CRAWL_TABLES =
   'TRUNCATE TABLE crawl_finished_pages, crawl_passes, crawl_runs RESTART IDENTITY';
 const TRUNCATE_ALL_CRAWL_TABLES =
@@ -121,7 +124,11 @@ function configuredSetup(db: Knex): SchemaSetup {
         return { ok: false, failure: storeUnavailable(NOT_A_TEST_DATABASE_MESSAGE) };
       }
       await db.transaction(async (trx) => {
-        await trx.raw(TRUNCATE_STORE_TABLES);
+        const embeddings: unknown = await trx.raw(TABLE_EXISTS, [EMBEDDINGS_TABLE]);
+        const [{ present: embeddingsPresent }] = TableExistsResultSchema.parse(embeddings).rows;
+        await trx.raw(
+          embeddingsPresent ? TRUNCATE_STORE_AND_EMBEDDING_TABLES : TRUNCATE_STORE_TABLES,
+        );
         const result: unknown = await trx.raw(TABLE_EXISTS, [CRAWL_TABLES.runs]);
         const [{ present }] = TableExistsResultSchema.parse(result).rows;
         if (!present) return;

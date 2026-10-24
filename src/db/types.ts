@@ -36,9 +36,12 @@ import type {
   CountRowSchema,
   CountsRowSchema,
   DuePlaceRowSchema,
+  EmbeddingCountsRowSchema,
+  EmbeddingRowSchema,
   FailureRowSchema,
   FinishedPageRowSchema,
   IdRowSchema,
+  KeyColumnRowSchema,
   LiveRunRowSchema,
   NameRowSchema,
   ParkingRowSchema,
@@ -51,6 +54,8 @@ import type {
   ShapeRowSchema,
   TagLinkRowSchema,
   TagRowSchema,
+  TypmodRowSchema,
+  VectorIndexRowSchema,
 } from './rows';
 
 export type StoreResult<T> = { ok: true; value: T } | { ok: false; failure: StoreFailure };
@@ -77,6 +82,11 @@ export type LiveRunRow = z.infer<typeof LiveRunRowSchema>;
 export type FailureRow = z.infer<typeof FailureRowSchema>;
 export type RetryRow = z.infer<typeof RetryRowSchema>;
 export type ParkingRow = z.infer<typeof ParkingRowSchema>;
+export type EmbeddingRow = z.infer<typeof EmbeddingRowSchema>;
+export type EmbeddingCountsRow = z.infer<typeof EmbeddingCountsRowSchema>;
+export type TypmodRow = z.infer<typeof TypmodRowSchema>;
+export type KeyColumnRow = z.infer<typeof KeyColumnRowSchema>;
+export type VectorIndexRow = z.infer<typeof VectorIndexRowSchema>;
 
 /** jsonb form of an Outline: `[[lon, lat], ...]`. */
 export type OutlinePairs = [number, number][];
@@ -146,7 +156,11 @@ export interface FlatComment {
   position: number;
 }
 
-export interface NamedMigration { name: string; up(knex: Knex): Promise<void>; down(knex: Knex): Promise<void>; }
+export interface NamedMigration {
+  name: string;
+  up(knex: Knex): Promise<void>;
+  down(knex: Knex): Promise<void>;
+}
 
 /** Executes write statements, numbers them from 1 and calls the `onWrite` hook (`writer.ts`). */
 export interface Writer {
@@ -159,7 +173,9 @@ export interface Writer {
 }
 
 /** Existing rows for the page's ids (Listing Save). */
-export interface ListingState { rows: PlaceRow[] }
+export interface ListingState {
+  rows: PlaceRow[];
+}
 
 /** Stored state of one place before a Details Save. */
 export interface DetailsState {
@@ -313,9 +329,7 @@ export interface RegionTotals {
 }
 
 /** Result of the Failure Record step; `parked` only for a Place Parked after this record. */
-export type FailureStepValue =
-  | { kind: 'recorded'; parked?: ParkedPlace }
-  | { kind: 'taken_over' };
+export type FailureStepValue = { kind: 'recorded'; parked?: ParkedPlace } | { kind: 'taken_over' };
 
 export interface CrawlRepositoryOptions {
   connectionString: string;
@@ -335,4 +349,17 @@ export interface CrawlRepository {
   regionTotals(input: PlacesDueInput): Promise<StoreResult<RegionTotals>>;
   finishRun(input: FinishInput): Promise<StoreResult<{ updated: boolean }>>;
   close(): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// Embedding Store (AL4 embeddings 1.3, 1.4.8)
+// ---------------------------------------------------------------------------
+
+/** One `place_embeddings` upsert row; `embedding` is the `?::vector` raw binding. */
+export interface EmbeddingRowColumns {
+  place_id: number;
+  embedding: Knex.Raw;
+  embedding_model: string;
+  document_fingerprint: string;
+  embedded_at: string;
 }
