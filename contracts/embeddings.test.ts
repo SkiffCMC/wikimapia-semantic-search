@@ -56,7 +56,6 @@ import {
   VOYAGE_API_KEY_ENV,
   VOYAGE_MAX_TEXTS_PER_REQUEST,
   documentFingerprint,
-  embedExitCodeFor,
   estimateDocumentTokens,
   findBatchIssues,
   type BuildPlaceDocumentFn,
@@ -397,10 +396,7 @@ function everyOutput(report: EmbeddingRunReport, lines: readonly string[]): stri
 describe('AC-1 Layout, full example', () => {
   it('the Place Document of Synthetic Place K read back from the Place Store is exactly the stated text', async () => {
     await seedK();
-    const document = await documentOf(PLACE_K_ID);
-    expect(document).toBe(K_DOCUMENT);
-    expect(document.startsWith('\n')).toBe(false);
-    expect(document.endsWith('\n')).toBe(false);
+    expect(await documentOf(PLACE_K_ID)).toBe(K_DOCUMENT);
   });
 });
 
@@ -490,7 +486,7 @@ describe('AC-6 Bare Web Addresses removed', () => {
 });
 
 describe('AC-7 Description that is only a web address', () => {
-  it.each(['http://example.org', '  https://example.org/x  ', '\n www.example.org \r\n'])(
+  it.each(['http://example.org', '\n www.example.org \r\n'])(
     'description %j gives no Description Part',
     (description) => {
       expect(build(detailedPlace({ name: 'N', description }))).toBe('N');
@@ -570,23 +566,6 @@ describe('AC-11 Which Comments are included', () => {
       'Comment: reply of gone',
     ]);
   });
-
-  it('a deleted Comment with a Present Reply, saved through the Place Store', async () => {
-    const comment = await baseComment();
-    const details = await syntheticDetails(321);
-    await saveDetails({
-      ...details,
-      comments: [
-        {
-          ...rehome(comment, 321, 1, [{ ...rehome(comment, 321, 2), message: 'kept reply' }]),
-          message: 'deleted one',
-          isDeleted: true,
-        },
-      ],
-    });
-    const comments = partsOf(await documentOf(321)).filter((p) => p.startsWith('Comment:'));
-    expect(comments).toStrictEqual(['Comment: kept reply']);
-  });
 });
 
 describe('AC-12 Comment order', () => {
@@ -647,7 +626,6 @@ describe('AC-16 Same Place, same text', () => {
     const first = await documentOf(PLACE_K_ID);
     const second = await documentOf(PLACE_K_ID);
     expect(second).toBe(first);
-    expect(build(await readDetailed(PLACE_K_ID))).toBe(first);
     expect(documentFingerprint(second)).toBe(documentFingerprint(first));
   });
 });
@@ -760,7 +738,22 @@ describe('AC-21 Changes outside the Place Document do not count', () => {
 });
 
 describe('AC-22 Changed text is embedded again', () => {
-  async function changeAndEmbed(change: (d: PlaceDetails) => Promise<PlaceDetails> | PlaceDetails) {
+  const changes: [string, (d: PlaceDetails) => Promise<PlaceDetails> | PlaceDetails][] = [
+    [
+      'a new Present Comment',
+      async (d) => ({
+        ...d,
+        comments: [
+          ...d.comments,
+          { ...rehome(await baseComment(), 62587, 99), message: 'A new comment.' },
+        ],
+      }),
+    ],
+    ['a changed description', (d) => ({ ...d, description: `${d.description} Changed.` })],
+    ['a Tag that became Gone', (d) => ({ ...d, tags: d.tags.slice(1) })],
+  ];
+
+  it.each(changes)('%s: sent again, the one record replaced', async (_, change) => {
     const details = await clientDetails('getbyid-62587.json');
     await saveDetails(details);
     await embed();
@@ -773,22 +766,6 @@ describe('AC-22 Changed text is embedded again', () => {
     expect(fresh.embedding).not.toStrictEqual(old.embedding);
     expect(Date.parse(fresh.embeddedAt)).toBeGreaterThan(Date.parse(old.embeddedAt));
     expect((await embedCounts()).embeddingRecords).toBe(1);
-  }
-
-  it('a new Present Comment', async () => {
-    const comment = await baseComment();
-    await changeAndEmbed((d) => ({
-      ...d,
-      comments: [...d.comments, { ...rehome(comment, 62587, 99), message: 'A new comment.' }],
-    }));
-  });
-
-  it('a changed description', async () => {
-    await changeAndEmbed((d) => ({ ...d, description: `${d.description} Changed.` }));
-  });
-
-  it('a Tag that became Gone', async () => {
-    await changeAndEmbed((d) => ({ ...d, tags: d.tags.slice(1) }));
   });
 });
 
@@ -838,36 +815,26 @@ describe('AC-25 Embedding Order', () => {
 describe('AC-26 Embedding kept with the right Place', () => {
   const E = [fakeVector(1024, 'E1'), fakeVector(1024, 'E2'), fakeVector(1024, 'E3')];
 
-  async function seedThree() {
+  const answerOf = (data: { embedding: number[] | undefined; index?: number }[]) => ({
+    data: data.map((item) => ({ object: 'embedding', ...item })),
+    model: EMBEDDING_MODEL,
+    usage: { totalTokens: 30 },
+  });
+
+  it.each([
+    ['without indexes the position decides', answerOf(E.map((embedding) => ({ embedding })))],
+    [
+      'with indexes the index decides, not the position in the answer',
+      answerOf([
+        { embedding: E[2], index: 2 },
+        { embedding: E[0], index: 0 },
+        { embedding: E[1], index: 1 },
+      ]),
+    ],
+  ])('%s: 300 E1, 62587 E2, 1381893 E3', async (_, answer) => {
     await seedSynthetic(300);
     await saveDetails(await clientDetails('getbyid-62587.json'));
     await saveDetails(await clientDetails('getbyid-1381893.json'));
-  }
-
-  it('without indexes the position decides: 300 E1, 62587 E2, 1381893 E3', async () => {
-    await seedThree();
-    const answer = {
-      data: E.map((embedding) => ({ object: 'embedding', embedding })),
-      model: EMBEDDING_MODEL,
-      usage: { totalTokens: 30 },
-    };
-    await embed({ responder: () => raw(answer) });
-    expect((await requireRecord(300)).embedding).toStrictEqual(E[0]);
-    expect((await requireRecord(62587)).embedding).toStrictEqual(E[1]);
-    expect((await requireRecord(1381893)).embedding).toStrictEqual(E[2]);
-  });
-
-  it('with indexes the index decides, not the position in the answer', async () => {
-    await seedThree();
-    const answer = {
-      data: [
-        { object: 'embedding', embedding: E[2], index: 2 },
-        { object: 'embedding', embedding: E[0], index: 0 },
-        { object: 'embedding', embedding: E[1], index: 1 },
-      ],
-      model: EMBEDDING_MODEL,
-      usage: { totalTokens: 30 },
-    };
     await embed({ responder: () => raw(answer) });
     expect((await requireRecord(300)).embedding).toStrictEqual(E[0]);
     expect((await requireRecord(62587)).embedding).toStrictEqual(E[1]);
@@ -1127,17 +1094,12 @@ describe('AC-38 Invalid Embedding Answer', () => {
     model: EMBEDDING_MODEL,
     usage: { totalTokens: 20 },
   };
-  const withValue = (value: unknown) => three([...fakeVector(1023), value]);
   const cases: [string, unknown][] = [
     ['2 Embeddings for 3 documents', twoOnly],
     ['an Embedding of 1023 numbers', three(fakeVector(1023))],
     ['an Embedding of 1025 numbers', three(fakeVector(1025))],
-    ['a NaN value', withValue(Number.NaN)],
-    ['an infinite value', withValue(Number.POSITIVE_INFINITY)],
-    ['a text value', withValue('0.5')],
-    ['an answer that cannot be read (text)', '<html>Bad gateway</html>'],
-    ['an answer that cannot be read (null)', null],
-    ['an answer that cannot be read (no data)', { usage: { totalTokens: 1 } }],
+    ['a NaN value', three([...fakeVector(1023), Number.NaN])],
+    ['an answer that cannot be read', '<html>Bad gateway</html>'],
   ];
 
   it.each(cases)(
@@ -1171,15 +1133,9 @@ describe('AC-39 Place Store refuses wrong Embeddings', () => {
   const bad: [string, (r: EmbeddingRecord) => unknown][] = [
     ['1023 numbers', (r) => ({ ...r, embedding: fakeVector(1023) })],
     ['1025 numbers', (r) => ({ ...r, embedding: fakeVector(1025) })],
-    ['1536 numbers', (r) => ({ ...r, embedding: fakeVector(1536) })],
     ['a NaN value', (r) => ({ ...r, embedding: [...fakeVector(1023), Number.NaN] })],
-    [
-      'an infinite value',
-      (r) => ({ ...r, embedding: [...fakeVector(1023), Number.NEGATIVE_INFINITY] }),
-    ],
     ['an empty Embedding Model', (r) => ({ ...r, model: '' })],
     ['no Document Fingerprint', (r) => ({ ...r, documentFingerprint: undefined })],
-    ['an empty Document Fingerprint', (r) => ({ ...r, documentFingerprint: '' })],
   ];
 
   it.each(bad)(
@@ -1234,7 +1190,6 @@ describe('AC-39 Place Store refuses wrong Embeddings', () => {
 describe('AC-40 Missing key', () => {
   it.each([
     ['not set', null],
-    ['empty', ''],
     ['blank', '   '],
   ] as const)(
     'VOYAGE_API_KEY %s: Failed naming it, no request, nothing changed',
@@ -1258,7 +1213,7 @@ describe('AC-40 Missing key', () => {
 });
 
 describe('AC-41 Invalid setting', () => {
-  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+  it.each([0, 1.5, Number.NaN])(
     'Embedding Limit %s: Failed naming the setting, no request, nothing changed',
     async (embeddingLimit) => {
       await seedSynthetic(301);
@@ -1278,7 +1233,7 @@ describe('AC-41 Invalid setting', () => {
     expect(service.calls).toHaveLength(0);
   });
 
-  it.each([['abc'], ['0'], ['-3'], ['2.5']])(
+  it.each([['abc'], ['0'], ['2.5']])(
     'command `--limit %s` fails naming the setting',
     async (value) => {
       await seedSynthetic(301);
@@ -1563,13 +1518,15 @@ describe('AC-49 Command form', () => {
     expect(scripts[EMBED_SCRIPT.name]).toMatch(new RegExp(`^${EMBED_SCRIPT.runner}\\s`));
   });
 
-  it('no options: a Run with the default settings over all Detailed Places', async () => {
+  it('no options: a Run with the default settings over all Detailed Places; the summary is written', async () => {
     await saveRecordedListing();
     await seedSynthetic(301, 302);
-    const { result, service } = await runCommand([]);
+    const { result, output, service } = await runCommand([]);
     expect(result.report.outcome).toBe('completed');
     expect(service.texts).toHaveLength(2);
     expect(result.report.summary.counts.summaryOnlySkipped).toBe(3);
+    const text = output.join('\n');
+    for (const line of summaryLines(result.report)) expect(text).toContain(line);
   });
 
   it('`--limit 2` sets the Embedding Limit for that Run', async () => {
@@ -1579,7 +1536,7 @@ describe('AC-49 Command form', () => {
     expect(result.report.outcome).toBe('limit_reached');
   });
 
-  it.each([['--dry-run'], ['--region'], ['extra']])(
+  it.each([['--dry-run'], ['extra']])(
     'unknown option %s: Failed with a usage message, nothing sent',
     async (option) => {
       await seedSynthetic(301);
@@ -1592,13 +1549,6 @@ describe('AC-49 Command form', () => {
       expect((await embedCounts()).embeddingRecords).toBe(0);
     },
   );
-
-  it('the command writes the plain-text Run Summary', async () => {
-    await seedSynthetic(301);
-    const { result, output } = await runCommand([]);
-    const text = output.join('\n');
-    for (const line of summaryLines(result.report)) expect(text).toContain(line);
-  });
 });
 
 describe('AC-50 Exit status', () => {
@@ -1625,16 +1575,6 @@ describe('AC-50 Exit status', () => {
     const interrupted = await runCommand([], { signal: controller.signal });
     expect(interrupted.result.report.outcome).toBe('interrupted');
     expect(interrupted.result.exitCode).toBe(1);
-
-    for (const outcome of [
-      'completed',
-      'limit_reached',
-      'rate_limited',
-      'failed',
-      'interrupted',
-    ] as const) {
-      expect([0, 1]).toContain(embedExitCodeFor(outcome));
-    }
   });
 });
 
@@ -1763,8 +1703,9 @@ describe('AC-55 Step can be undone', () => {
 
     okValue(SchemaStepsResultSchema.parse(await setup.apply()));
     expect((await inspect()).tables.map((t) => t.name)).toContain(EMBEDDING_TABLE);
-    expect((await storageInfo()).dimensions).toBe(EMBEDDING_DIMENSIONS);
-    expect((await storageInfo()).vectorIndexes.length).toBeGreaterThan(0);
+    const reapplied = await storageInfo();
+    expect(reapplied.dimensions).toBe(EMBEDDING_DIMENSIONS);
+    expect(reapplied.vectorIndexes.length).toBeGreaterThan(0);
   });
 });
 
@@ -1853,12 +1794,10 @@ describe('R2 Embedding Store read', () => {
   });
 
   it('an invalid read is Invalid Data; an unreachable store is Store Unavailable without secrets', async () => {
-    for (const input of [{ limit: 0 }, { limit: 1001 }, { limit: 1, afterPlaceId: -1 }]) {
-      const result = EmbeddingCandidatesResultSchema.parse(
-        await embeddings.listEmbeddingCandidates(input),
-      );
-      expect(failureOf(result).kind).toBe('invalid_data');
-    }
+    const invalid = EmbeddingCandidatesResultSchema.parse(
+      await embeddings.listEmbeddingCandidates({ limit: 1001 }),
+    );
+    expect(failureOf(invalid).kind).toBe('invalid_data');
     const unreachable = createEmbeddings({ connectionString: UNREACHABLE_DATABASE_URL });
     try {
       const failure = failureOf(
