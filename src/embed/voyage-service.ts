@@ -1,14 +1,17 @@
 /**
- * The production Embedding Service over the `voyageai` SDK (AL4 embeddings 1.4.6, section 3).
+ * The production Embedding Services over the `voyageai` SDK: the document adapter of the
+ * Embedding Run (AL4 embeddings 1.4.6, section 3) and the query adapter of Place Search
+ * (AL4 hybrid-search 1.4.1). Both share one private client setup.
  *
- * The SDK is loaded lazily inside the factory, so a Run or a test that injects its own service
- * never loads it. The SDK's own retries are turned off on every call (the Run's 30 s / 60 s
- * retries are the only ones) and every call has a timeout. Errors are rethrown unchanged so
+ * The SDK is loaded lazily inside the factories, so a Run, a search or a test that injects its
+ * own service never loads it. The SDK's own retries are turned off on every call (the Run's 30 s / 60 s
+ * retries are the only ones; a search never retries) and every call has a timeout. Errors are rethrown unchanged so
  * `classifyEmbeddingServiceError` sees their `statusCode`; the adapter never logs, never reads
  * the environment and never builds a message of its own.
  */
 import type { EmbeddingService } from '../../contracts/embeddings.schema';
-import type { VoyageServiceOptions } from './types';
+import type { QueryEmbeddingService } from '../../contracts/hybrid-search.schema';
+import type { VoyageEmbedRequest, VoyageServiceOptions } from './types';
 
 /** Seconds one request may take before it counts as a Connection Failure (AL4 section 3). */
 const DEFAULT_TIMEOUT_SECONDS = 120;
@@ -34,35 +37,55 @@ export function normaliseVoyageAnswer(answer: unknown): unknown {
   return { ...answer, usage: { ...usage, totalTokens: total } };
 }
 
-export async function createVoyageEmbeddingService(
+/**
+ * Loads the SDK lazily, builds the client and returns the one call both adapters share: SDK
+ * retries off, a per-call timeout, `truncation` only when the request carries it, the answer
+ * normalised, a 2xx error read as an unreadable answer and every other error rethrown unchanged.
+ */
+async function openVoyageEmbed(
   options: VoyageServiceOptions,
-): Promise<EmbeddingService> {
+): Promise<(request: VoyageEmbedRequest) => Promise<unknown>> {
   const { VoyageAIClient } = await import('voyageai');
   const client = new VoyageAIClient({
     apiKey: options.apiKey,
     ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
   });
   const timeoutInSeconds = options.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
-  return {
-    embed: async (request) => {
-      try {
-        const answer = await client.embed(
-          {
-            input: request.input,
-            model: request.model,
-            inputType: request.inputType,
-            outputDimension: request.outputDimension,
-            ...(request.truncation === undefined ? {} : { truncation: request.truncation }),
-          },
-          { maxRetries: 0, timeoutInSeconds },
-        );
-        return normaliseVoyageAnswer(answer);
-      } catch (error) {
-        // An unreadable 2xx body is an Invalid Embedding Answer downstream, not Service Refused.
-        const status = statusCodeOf(error);
-        if (status !== undefined && status >= 200 && status <= 299) return undefined;
-        throw error;
-      }
-    },
+  return async (request) => {
+    try {
+      const answer = await client.embed(
+        {
+          input: request.input,
+          model: request.model,
+          inputType: request.inputType,
+          outputDimension: request.outputDimension,
+          ...(request.truncation === undefined ? {} : { truncation: request.truncation }),
+        },
+        { maxRetries: 0, timeoutInSeconds },
+      );
+      return normaliseVoyageAnswer(answer);
+    } catch (error) {
+      // An unreadable 2xx body is an Invalid Embedding Answer downstream, not Service Refused.
+      const status = statusCodeOf(error);
+      if (status !== undefined && status >= 200 && status <= 299) return undefined;
+      throw error;
+    }
   };
+}
+
+/** The document-side Embedding Service of the Embedding Run (AL4 embeddings 1.4.6). */
+export async function createVoyageEmbeddingService(
+  options: VoyageServiceOptions,
+): Promise<EmbeddingService> {
+  return { embed: await openVoyageEmbed(options) };
+}
+
+/**
+ * The query-side Embedding Service of Place Search (AL4 hybrid-search 1.4.1). Place Search
+ * passes `timeoutSeconds: QUERY_EMBEDDING_TIMEOUT_SECONDS`; without it the timeout is 120 s.
+ */
+export async function createVoyageQueryEmbeddingService(
+  options: VoyageServiceOptions,
+): Promise<QueryEmbeddingService> {
+  return { embed: await openVoyageEmbed(options) };
 }

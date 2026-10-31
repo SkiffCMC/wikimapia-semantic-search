@@ -4,7 +4,7 @@
  * returned, never the raw input. Issues carry paths and Zod messages only (no input values,
  * AC-54). No function here ever throws.
  */
-import type { z } from 'zod';
+import { z } from 'zod';
 import {
   PlaceRefInputSchema,
   SaveListingPageInputSchema,
@@ -36,11 +36,19 @@ import {
   EmbeddingCandidatesInputSchema,
   SaveEmbeddingRecordsInputSchema,
   type EmbeddingCandidatesInput,
+  EmbeddingSchema,
   type SaveEmbeddingRecordsInput,
 } from '../../contracts/embeddings.schema';
+import {
+  AreaFilterSchema,
+  LatLonSchema,
+  MAX_RADIUS_METRES,
+  MAX_RESULT_LIMIT,
+  SearchModeSchema,
+} from '../../contracts/hybrid-search.schema';
 import { toFailureIssues } from '../wikimapia/issues';
 import { invalidData } from './failures';
-import type { Validated } from './types';
+import type { PlaceSearchQuery, Validated } from './types';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -167,5 +175,36 @@ export function validateSaveEmbeddingRecordsInput(
     SaveEmbeddingRecordsInputSchema,
     input,
     'input does not have the shape of an Embedding Records save',
+  );
+}
+
+/**
+ * Search statement input (AL4 hybrid-search 1.4.8), built from contract pieces: a gated Query
+ * Embedding, a Search Mode, a Result Limit of 1 .. 50, an optional Radius (> 0 .. 50,000 m) or
+ * Area (never both) and optional non-empty Tag titles (at least one, no maximum).
+ */
+const PlaceSearchQuerySchema = z
+  .strictObject({
+    queryEmbedding: EmbeddingSchema,
+    mode: SearchModeSchema,
+    limit: z.number().int().min(1).max(MAX_RESULT_LIMIT),
+    radius: z
+      .strictObject({
+        centre: LatLonSchema,
+        radiusMetres: z.number().positive().max(MAX_RADIUS_METRES),
+      })
+      .exactOptional(),
+    area: AreaFilterSchema.exactOptional(),
+    tagTitles: z.array(z.string().min(1)).min(1).exactOptional(),
+  })
+  .refine((q) => q.radius === undefined || q.area === undefined, {
+    message: 'radius and area cannot be used together',
+  });
+
+export function validatePlaceSearchQuery(input: unknown): Validated<PlaceSearchQuery> {
+  return plain<PlaceSearchQuery>(
+    PlaceSearchQuerySchema,
+    input,
+    'input does not have the shape of a place search query',
   );
 }

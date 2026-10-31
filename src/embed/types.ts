@@ -9,12 +9,14 @@ import type {
   EmbeddingRunOutcome,
   EmbeddingRunRequest,
   EmbeddingService,
+  EmbeddingServiceRequest,
   EmbeddingSettings,
   EmbeddingStore,
   FailedPlaceKind,
   FailedPlaceReport,
   PlaceDocument,
 } from '../../contracts/embeddings.schema';
+import type { QueryEmbeddingRequest } from '../../contracts/hybrid-search.schema';
 
 /** A Place that is Embedding Due and not yet sent, with its Place Document and fingerprint. */
 export interface DueItem {
@@ -86,6 +88,9 @@ export interface VoyageServiceOptions {
   timeoutSeconds?: number;
 }
 
+/** A request either Voyage adapter sends: a Batch of documents or one search query (AL4 hybrid-search 1.3). */
+export type VoyageEmbedRequest = EmbeddingServiceRequest | QueryEmbeddingRequest;
+
 /** Collaborators and settings of the scan-and-send loop of one Run (AL4 1.4.2). */
 export interface RunLoopContext {
   service: EmbeddingService;
@@ -99,5 +104,4 @@ export interface RunLoopContext {
 
 /** Result of parsing the Embed Command's arguments (AL4 1.3, 1.4.10). */
 export type ParsedEmbedArgs =
-  | { ok: true; request: EmbeddingRunRequest }
-  | { ok: false; problem: string };
+  { ok: true; request: EmbeddingRunRequest } | { ok: false; problem: string };

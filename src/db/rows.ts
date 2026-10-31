@@ -287,3 +287,22 @@ export const VectorIndexRowSchema = z.object({
   operator_class: z.string(),
   partial: z.boolean(),
 });
+
+// ---------------------------------------------------------------------------
+// Place Search (AL4 hybrid-search 1.4.8)
+// ---------------------------------------------------------------------------
+
+/**
+ * One row of the search statement. `float8` arrives as a JS number and `text[]` as a string
+ * array (pg's default parsers); `distance_metres` is null without a Radius Filter.
+ */
+export const SearchRowSchema = z.object({
+  place_id: BigintSchema,
+  name: z.string(),
+  wikimapia_url: z.string(),
+  location_lat: z.number(),
+  location_lon: z.number(),
+  similarity: z.number(),
+  distance_metres: z.number().nullable(),
+  tags: z.array(z.string()),
+});
