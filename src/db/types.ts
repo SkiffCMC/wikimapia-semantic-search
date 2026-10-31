@@ -20,6 +20,13 @@ import type {
   Tag,
 } from '../../contracts/wikimapia-client.schema';
 import type { FailureRecord } from '../../contracts/crawl-run1-fixes.schema';
+import type { Embedding } from '../../contracts/embeddings.schema';
+import type {
+  AreaFilter,
+  LatLon,
+  SearchMode,
+  SearchResult,
+} from '../../contracts/hybrid-search.schema';
 import type {
   DuePlace,
   ItemFailureKind,
@@ -51,6 +58,7 @@ import type {
   RetryRowSchema,
   RingPointRowSchema,
   RunRowSchema,
+  SearchRowSchema,
   ShapeRowSchema,
   TagLinkRowSchema,
   TagRowSchema,
@@ -362,4 +370,42 @@ export interface EmbeddingRowColumns {
   embedding_model: string;
   document_fingerprint: string;
   embedded_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Place Search (AL4 hybrid-search 1.3, 1.4.3, 1.4.8)
+// ---------------------------------------------------------------------------
+
+/** Input of one search statement; checked by `validatePlaceSearchQuery` before any SQL. */
+export interface PlaceSearchQuery {
+  /** Gated by `EmbeddingSchema`. */
+  queryEmbedding: Embedding;
+  mode: SearchMode;
+  /** 1 .. MAX_RESULT_LIMIT. */
+  limit: number;
+  /** Never together with `area`. */
+  radius?: { centre: LatLon; radiusMetres: number };
+  area?: AreaFilter;
+  /** Normalized, unique, at least one; any count. */
+  tagTitles?: readonly string[];
+}
+
+export type SqlBinding = string | number | string[];
+
+export interface SqlStatement {
+  sql: string;
+  bindings: SqlBinding[];
+}
+
+export type SearchRow = z.infer<typeof SearchRowSchema>;
+
+export interface PlaceSearchStoreOptions {
+  connectionString: string;
+}
+
+export interface PlaceSearchStore {
+  /** Never rejects. */
+  searchMatchingPlaces(query: PlaceSearchQuery): Promise<StoreResult<SearchResult[]>>;
+  /** Idempotent, never rejects. */
+  close(): Promise<void>;
 }

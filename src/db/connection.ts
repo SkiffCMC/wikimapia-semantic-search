@@ -31,12 +31,13 @@ function getTypeParser(oid: Parameters<typeof pg.types.getTypeParser>[0], format
     : pg.types.getTypeParser(oid, 'text');
 }
 
-export function createDb(connectionString: string, poolMax: number): Knex {
+export function createDb(connectionString: string, poolMax: number, sessionOptions?: string): Knex {
   const connection: Knex.PgConnectionConfig = {
     connectionString,
     connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
     statement_timeout: STATEMENT_TIMEOUT_MS,
     types: { getTypeParser },
+    ...(sessionOptions !== undefined ? { options: sessionOptions } : {}),
   };
   return knex({
     client: 'pg',

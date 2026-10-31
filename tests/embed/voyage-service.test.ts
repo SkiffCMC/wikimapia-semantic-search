@@ -5,10 +5,12 @@
  */
 import {
   createVoyageEmbeddingService,
+  createVoyageQueryEmbeddingService,
   normaliseVoyageAnswer,
 } from '../../src/embed/voyage-service';
 import type { VoyageServiceOptions } from '../../src/embed/types';
 import type { EmbeddingServiceRequest } from '../../contracts/embeddings.schema';
+import type { QueryEmbeddingRequest } from '../../contracts/hybrid-search.schema';
 import { TEST_VOYAGE_API_KEY } from '../../contracts/embeddings.support';
 
 const sdk = vi.hoisted(() => ({
@@ -105,4 +107,58 @@ it.each<[string, unknown]>([
   ['non-numeric total_tokens', { usage: { total_tokens: '3' } }],
 ])('normaliseVoyageAnswer returns the answer as it came: %s', (_label, answer) => {
   expect(normaliseVoyageAnswer(answer)).toBe(answer);
+});
+
+// ---------------------------------------------------------------------------
+// Query adapter `createVoyageQueryEmbeddingService` (AL4 hybrid-search 1.4.1, U1)
+// ---------------------------------------------------------------------------
+
+const QUERY: QueryEmbeddingRequest = {
+  input: ['Музеј near the river'],
+  model: 'voyage-4',
+  inputType: 'query',
+  outputDimension: 1024,
+};
+
+describe('createVoyageQueryEmbeddingService', () => {
+  it.each<[string, VoyageServiceOptions, object, number]>([
+    ['defaults', { apiKey: TEST_VOYAGE_API_KEY }, { apiKey: TEST_VOYAGE_API_KEY }, 120],
+    [
+      'baseUrl and a 30 s timeout given',
+      { apiKey: TEST_VOYAGE_API_KEY, baseUrl: 'http://127.0.0.1:1/v1', timeoutSeconds: 30 },
+      { apiKey: TEST_VOYAGE_API_KEY, baseUrl: 'http://127.0.0.1:1/v1' },
+      30,
+    ],
+  ])('%s: query request without truncation, no SDK retry', async (_l, options, client, timeout) => {
+    sdk.embed.mockResolvedValue({ data: [], usage: { total_tokens: 3 } });
+    const service = await createVoyageQueryEmbeddingService(options);
+
+    expect(await service.embed(QUERY)).toStrictEqual({
+      data: [],
+      usage: { total_tokens: 3, totalTokens: 3 },
+    });
+    expect(sdk.constructed).toStrictEqual([client]);
+    expect(sdk.embed.mock.calls).toStrictEqual([
+      [
+        { input: QUERY.input, model: 'voyage-4', inputType: 'query', outputDimension: 1024 },
+        { maxRetries: 0, timeoutInSeconds: timeout },
+      ],
+    ]);
+  });
+
+  it.each<[string, unknown]>([
+    ['an HTTP 401', Object.assign(new Error('unauthorized'), { statusCode: 401 })],
+    ['an HTTP 429', Object.assign(new Error('rate limit'), { statusCode: 429 })],
+    ['an error without statusCode', new Error('timeout')],
+  ])('rethrows %s unchanged', async (_l, error) => {
+    sdk.embed.mockRejectedValue(error);
+    const service = await createVoyageQueryEmbeddingService({ apiKey: TEST_VOYAGE_API_KEY });
+    await expect(service.embed(QUERY)).rejects.toBe(error);
+  });
+
+  it('an error with a 2xx statusCode resolves undefined', async () => {
+    sdk.embed.mockRejectedValue({ statusCode: 204 });
+    const service = await createVoyageQueryEmbeddingService({ apiKey: TEST_VOYAGE_API_KEY });
+    await expect(service.embed(QUERY)).resolves.toBeUndefined();
+  });
 });
