@@ -7,3 +7,6 @@ data/
 !.env.example
 !.env.test.example
 .add/cleanup/
+
+# Local VS Code workspace
+code.code-workspace
